@@ -360,20 +360,24 @@ export default function Index() {
   const [chatOpen, setChatOpen] = useState(false);
 
   return (
-    <div className="relative min-h-screen bg-black text-white overflow-x-hidden">
+    <div className="relative min-h-screen text-white overflow-x-hidden">
       {/* Intro overlay */}
       {showIntro && <IntroOverlay onDone={() => setShowIntro(false)} />}
 
       {/* Chat page */}
       {chatOpen && <ChatPage onClose={() => setChatOpen(false)} />}
 
-      {/* Star canvas */}
+      {/* Black base layer so body bg shows */}
+      <div className="fixed inset-0" style={{ zIndex: 0, background: "black" }} />
+
+      {/* Star canvas — sits above black base, below content */}
       <StarCanvas count={300} />
 
-      {/* Red bottom glow */}
+      {/* Red bottom glow — above stars */}
       <div
-        className="fixed pointer-events-none -z-20"
+        className="fixed pointer-events-none"
         style={{
+          zIndex: 2,
           bottom: "-200px",
           left: "50%",
           transform: "translateX(-50%)",
@@ -384,10 +388,10 @@ export default function Index() {
         }}
       />
 
-      {/* Vignette */}
+      {/* Vignette — above stars, below content */}
       <div
-        className="fixed inset-0 pointer-events-none -z-10"
-        style={{ background: "radial-gradient(circle at center, transparent 50%, black 100%)" }}
+        className="fixed inset-0 pointer-events-none"
+        style={{ zIndex: 3, background: "radial-gradient(circle at center, transparent 50%, black 100%)" }}
       />
 
       {/* Navbar */}
@@ -398,7 +402,7 @@ export default function Index() {
       </nav>
 
       {/* HERO */}
-      <section className="h-screen flex flex-col items-center justify-center text-center relative">
+      <section className="h-screen flex flex-col items-center justify-center text-center relative" style={{ zIndex: 10 }}>
         {/* Rotating loader rings */}
         <div className="absolute w-[300px] h-[300px] flex items-center justify-center">
           <div
@@ -462,7 +466,7 @@ export default function Index() {
       </section>
 
       {/* SIX AGENTS */}
-      <section className="px-[10%] py-[120px] relative">
+      <section className="px-[10%] py-[120px] relative" style={{ zIndex: 10 }}>
         <div className="text-center text-[48px] tracking-[6px] mb-20 white-shadow font-bold">
           SIX SPECIAL AI AGENTS
         </div>
@@ -474,7 +478,7 @@ export default function Index() {
       </section>
 
       {/* PROCESS FLOW */}
-      <section className="px-[8%] py-[120px] relative">
+      <section className="px-[8%] py-[120px] relative" style={{ zIndex: 10 }}>
         <div
           className="text-center text-[52px] font-black tracking-[6px] mb-[100px]"
           style={{ textShadow: "0 0 20px #ff2a2a, 0 0 60px #ff2a2a", color: "white" }}
@@ -489,7 +493,7 @@ export default function Index() {
       </section>
 
       {/* SECURITY */}
-      <section className="px-[8%] py-[80px_8%_120px] text-center relative">
+      <section className="px-[8%] py-[80px_8%_120px] text-center relative" style={{ zIndex: 10 }}>
         <div className="absolute top-0 right-0 w-[180px] opacity-90" style={{ filter: "drop-shadow(0 0 12px white)" }}>
           <svg viewBox="0 0 130 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="5" y="35" width="75" height="50" rx="7" stroke="white" strokeWidth="4" />
@@ -514,13 +518,17 @@ export default function Index() {
       </section>
 
       {/* SSS + Chat bubbles */}
-      <SSSSection onOpenChat={() => setChatOpen(true)} />
+      <div style={{ position: "relative", zIndex: 10 }}>
+        <SSSSection onOpenChat={() => setChatOpen(true)} />
+      </div>
 
       {/* RTE Section */}
-      <RTESection />
+      <div style={{ position: "relative", zIndex: 10 }}>
+        <RTESection />
+      </div>
 
       {/* FOOTER */}
-      <footer className="relative px-[6%] pt-[60px] text-center overflow-hidden" style={{ background: "linear-gradient(to top, rgba(120,0,0,0.4), transparent)" }}>
+      <footer className="relative px-[6%] pt-[60px] text-center overflow-hidden" style={{ background: "linear-gradient(to top, rgba(120,0,0,0.4), transparent)", zIndex: 10 }}>
         <div
           className="inline-block rounded-[14px] px-9 py-3 text-[28px] font-black tracking-wide mb-6"
           style={{ background: "#111", border: "1px solid #333", boxShadow: "0 4px 30px rgba(0,0,0,0.6)" }}
