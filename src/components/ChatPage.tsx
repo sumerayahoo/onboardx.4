@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import ChatStarCanvas from "./ChatStarCanvas";
 
 interface Message {
   role: "user" | "bot";
@@ -191,13 +192,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
 
   return (
     <div className="fixed inset-0 z-[500] bg-black flex flex-col overflow-hidden">
-      {/* Stars */}
-      <div className="absolute inset-0 z-0">
-        {/* Simple static stars for chat bg */}
-        <div className="w-full h-full" style={{
-          backgroundImage: "radial-gradient(1px 1px at 20% 30%, white, transparent), radial-gradient(1px 1px at 80% 10%, white, transparent), radial-gradient(1px 1px at 50% 60%, white, transparent), radial-gradient(1px 1px at 10% 80%, white, transparent), radial-gradient(1px 1px at 90% 70%, white, transparent), radial-gradient(1px 1px at 35% 15%, white, transparent), radial-gradient(1px 1px at 65% 85%, white, transparent), radial-gradient(1px 1px at 5% 45%, white, transparent), radial-gradient(1px 1px at 95% 25%, white, transparent), radial-gradient(1px 1px at 75% 50%, white, transparent)",
-        }} />
-      </div>
+      {/* Animated star canvas */}
+      <ChatStarCanvas count={250} />
 
       {/* Ribbons */}
       <div className="absolute top-0 left-0 w-[55%] opacity-85 z-[1] pointer-events-none">
