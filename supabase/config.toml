@@ -1,0 +1,4 @@
+project_id = "aidlysaosymuclxvrnbx"
+
+[functions.onboardx-chat]
+verify_jwt = false
