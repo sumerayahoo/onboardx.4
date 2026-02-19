@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import ChatStarCanvas from "./ChatStarCanvas";
+import FaceVerification from "./FaceVerification";
 
 interface Message {
   role: "user" | "bot";
@@ -14,14 +15,26 @@ interface ChatPageProps {
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 
+const FACE_TRIGGER_PHRASES = [
+  "face verification",
+  "camera will open",
+  "open the camera",
+  "liveness check",
+  "selfie",
+  "face scan",
+];
+
 export default function ChatPage({ onClose }: ChatPageProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(5);
+  const [showFaceVerify, setShowFaceVerify] = useState(false);
+  const [documentBase64, setDocumentBase64] = useState<string | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatStarted = useRef(false);
+  const faceVerifyTriggered = useRef(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -111,6 +124,14 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         }
       }
 
+      // Check if bot reply triggers face verification
+      const lower = botReply.toLowerCase();
+      const triggersFace = FACE_TRIGGER_PHRASES.some((p) => lower.includes(p));
+      if (triggersFace && !faceVerifyTriggered.current) {
+        faceVerifyTriggered.current = true;
+        setTimeout(() => setShowFaceVerify(true), 1200);
+      }
+
       // Update progress
       setProgress((p) => Math.min(p + 15, 95));
     } catch (e) {
@@ -160,6 +181,9 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       const base64 = result.split(",")[1];
       const mimeType = file.type;
 
+      // Save the most recent document for face comparison
+      setDocumentBase64(base64);
+
       streamMessage(
         `I have uploaded a document: ${file.name}. Please verify it and extract any relevant information.`,
         messages,
@@ -168,6 +192,27 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleFaceVerified = (result: { success: boolean; message: string; capturedImage: string }) => {
+    setShowFaceVerify(false);
+    const botMsg: Message = {
+      role: "bot",
+      content: result.success
+        ? "✅ Face verification successful! Your identity has been confirmed. Running risk scoring now… 📊"
+        : result.message,
+    };
+    const newMessages = [...messages, botMsg];
+    setMessages(newMessages);
+    if (result.success) {
+      setProgress((p) => Math.min(p + 20, 95));
+      setTimeout(() => {
+        streamMessage(
+          "Face verification passed. Continue with risk scoring and then confirm account creation.",
+          newMessages
+        );
+      }, 1500);
+    }
   };
 
   const ribbonSvg = (
@@ -221,6 +266,15 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       <div className="absolute top-[18px] left-1/2 -translate-x-1/2 text-xl font-black z-10 tracking-wide">
         Onboard<span className="text-[#ff2a2a]" style={{ textShadow: "0 0 10px red" }}>X</span>
       </div>
+
+      {/* Face verification camera overlay */}
+      {showFaceVerify && (
+        <FaceVerification
+          documentBase64={documentBase64}
+          onVerified={handleFaceVerified}
+          onClose={() => setShowFaceVerify(false)}
+        />
+      )}
 
       {/* Main chat area */}
       <div className="relative z-[5] flex-1 flex flex-col items-center justify-center px-[6%] pt-16 pb-4">
@@ -349,16 +403,15 @@ export default function ChatPage({ onClose }: ChatPageProps) {
             className="flex-1 bg-transparent border-none outline-none text-white text-base tracking-wide placeholder:text-[#666]"
           />
 
-          {/* Mic button */}
+          {/* Camera button — manual trigger for face verify */}
           <button
+            onClick={() => setShowFaceVerify(true)}
             className="w-10 h-10 rounded-full flex items-center justify-center text-[#aaa] text-lg flex-shrink-0 hover:text-white transition-colors bg-transparent border-none cursor-pointer"
-            title="Voice"
+            title="Face Verification"
           >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="9" y="2" width="6" height="11" rx="3" />
-              <path d="M5 10a7 7 0 0 0 14 0" />
-              <line x1="12" y1="19" x2="12" y2="22" />
-              <line x1="9" y1="22" x2="15" y2="22" />
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
             </svg>
           </button>
 

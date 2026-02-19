@@ -9,19 +9,53 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { messages, fileData } = await req.json();
+    const { messages, fileData, faceVerifyMode } = await req.json();
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
+
+    // Face verification mode: pass messages directly to vision model
+    if (faceVerifyMode) {
+      const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-pro",
+          messages: [
+            {
+              role: "system",
+              content: "You are a face verification AI. Analyze images for liveness detection and face matching. Always respond ONLY with a raw JSON object (no markdown, no code blocks) with keys: liveness (boolean), match (boolean or null if no document provided), reason (string, max 20 words).",
+            },
+            ...messages,
+          ],
+          stream: true,
+        }),
+      });
+
+      if (!response.ok) {
+        const t = await response.text();
+        console.error("Face verify AI error:", response.status, t);
+        return new Response(JSON.stringify({ error: "Face verification failed" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(response.body, {
+        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+      });
+    }
 
     const systemPrompt = `You are OnboardX, a friendly AI banking onboarding assistant. Help users open a bank account in under 3 minutes. Guide them step by step:
 1) Ask if they are freelancer/salaried/business/student
 2) Ask to upload PAN card via the + button
-3) Ask to upload Aadhaar
-4) Mention face verification is next
-5) Mention risk scoring
+3) Ask to upload Aadhaar — IMPORTANT: When both PAN and Aadhaar have been uploaded, cross-check the name on both documents. If the names do not match, immediately say the documents don't match and ask to re-upload. Only continue if names match.
+4) After documents verified, say face verification is next and that the camera will open
+5) After face verification succeeds, mention risk scoring
 6) Confirm account creation
 
-When a user uploads a document, acknowledge it warmly, pretend to verify it, and give positive feedback if it looks like a valid document. Extract mock details like name and PAN number.
+When a user uploads a document image, use vision to extract the name, ID number, and document type. Compare across documents if multiple have been uploaded.
 
 Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally. Stay strictly on banking onboarding topic. Never break character.`;
 
