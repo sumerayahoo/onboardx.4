@@ -11,32 +11,29 @@ function sigmoid(x: number): number {
 }
 
 interface RiskInputs {
-  monthlyIncome: number;       // in INR
-  employmentType: string;      // freelancer | salaried | business | student
+  monthlyIncome: number;
+  employmentType: string;
   age?: number;
   documentsVerified: boolean;
   faceVerified: boolean;
 }
 
 interface RiskResult {
-  probability: number;         // 0.0 – 1.0
+  probability: number;
   level: "Low" | "Medium" | "High";
-  dti: number;                 // estimated debt-to-income ratio
+  dti: number;
   explanation: string;
 }
 
 function calculateRisk(inputs: RiskInputs): RiskResult {
-  // Coefficients (b0 + b1*x1 + ...)
-  const b0 = -1.5; // intercept
+  const b0 = -1.5;
 
-  // Income factor: higher income → lower risk
   const incomeScore = inputs.monthlyIncome > 80000 ? -1.2
     : inputs.monthlyIncome > 40000 ? -0.5
     : inputs.monthlyIncome > 20000 ? 0.2
     : inputs.monthlyIncome > 10000 ? 0.8
     : 1.5;
 
-  // Employment type factor
   const employmentScore: Record<string, number> = {
     salaried: -0.8,
     business: 0.1,
@@ -45,10 +42,8 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
   };
   const empScore = employmentScore[inputs.employmentType.toLowerCase()] ?? 0.3;
 
-  // Verification bonus
   const verifyScore = (inputs.documentsVerified ? -0.4 : 0.3) + (inputs.faceVerified ? -0.3 : 0.2);
 
-  // Estimated DTI (debt-to-income): simplified — students/freelancers assumed higher
   const dti = inputs.employmentType === "student" ? 55
     : inputs.employmentType === "freelancer" ? 42
     : inputs.employmentType === "business" ? 35
@@ -72,125 +67,15 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
   return { probability, level, dti, explanation };
 }
 
-// ── AbstractAPI Email Validation ──────────────────────────────────────────────
-// ── Replace your existing validateEmail function with this ──────────────────
-
-function isValidEmailFormat(email: string): boolean {
-  // Standard email regex — covers 99.9% of real addresses
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
-}
-
-async function validateEmail(email: string, apiKey: string): Promise<{ valid: boolean; reason: string }> {
-  // Always check format first — reject clearly malformed emails immediately
-  if (!isValidEmailFormat(email)) {
-    return { valid: false, reason: "Invalid email format. Please use format: name@domain.com" };
-  }
-
-  // If no API key configured, just trust the format check
-  if (!apiKey) {
-    return { valid: true, reason: "Email format is valid" };
-  }
-
-  try {
-    const url = `https://emailvalidation.abstractapi.com/v1/?api_key=${apiKey}&email=${encodeURIComponent(email)}`;
-    const res = await fetch(url);
-
-    if (!res.ok) {
-      console.error("Email validation service error:", res.status);
-      // API failed → fall back to format-only validation (already passed above)
-      return { valid: true, reason: "Validation service unavailable. Email format accepted." };
-    }
-
-    const data = await res.json();
-    console.log("Email validation response:", data);
-
-    // ── Handle AbstractAPI v2 format ──
-    if (data.email_deliverability) {
-      const isFormatValid = data.email_deliverability.is_format_valid === true;
-      if (!isFormatValid) {
-        return { valid: false, reason: "Invalid email format" };
-      }
-      // If format is valid but deliverability is uncertain/undeliverable,
-      // trust the format — deliverability checks are unreliable for many providers
-      return { valid: true, reason: "Email accepted" };
-    }
-
-    // ── Handle AbstractAPI v1 legacy format ──
-    const isFormatValid = data.is_valid_format?.value === true;
-    if (!isFormatValid) {
-      return { valid: false, reason: "Invalid email format" };
-    }
-
-    const status = data.deliverability?.toLowerCase();
-
-    // Only hard-reject if API explicitly flags format as bad
-    // Do NOT reject based on "undeliverable" — too many false positives
-    if (status === "deliverable" || status === "risky" || status === "undeliverable") {
-      // Accept all — deliverability varies by API quota/tier; format is our real gate
-      return { valid: true, reason: "Email accepted" };
-    }
-
-    // Unknown status → accept if format passed
-    return { valid: true, reason: "Email format accepted" };
-
-  } catch (error) {
-    console.error("Email validation failed:", error);
-    // Network error → format already validated above, so accept
-    return { valid: true, reason: "Could not verify email. Please ensure it is correct." };
-  }
-}
-    // FIX: API crash should NOT block onboarding
-    return {
-      valid: true,
-      reason: "Could not automatically verify email. Please ensure it is correct.",
-    };
-  }
-}
-
-// ── AbstractAPI Phone Validation ───────────────────────────────────────────────
-async function validatePhone(phone: string, apiKey: string): Promise<{ valid: boolean; isIndian: boolean; reason: string }> {
-  try {
-    const url = `https://phonevalidation.abstractapi.com/v1/?api_key=${apiKey}&phone=${encodeURIComponent(phone)}`;
-    const res = await fetch(url);
-    if (!res.ok) return { valid: false, isIndian: false, reason: "Validation service unavailable" };
-    const data = await res.json();
-    const isIndian = data.country?.code === "IN";
-    const valid = data.valid === true;
-    if (!isIndian) return { valid: false, isIndian: false, reason: "Only Indian mobile numbers (+91) are accepted." };
-    return { valid, isIndian: true, reason: valid ? "Phone is valid" : "Phone number appears invalid" };
-  } catch {
-    return { valid: false, isIndian: false, reason: "Could not validate phone" };
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const body = await req.json();
-    const { messages, fileData, faceVerifyMode, riskData, validateEmailReq, validatePhoneReq } = body;
+    const { messages, fileData, faceVerifyMode, riskData } = body;
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
-
-    const EMAIL_API_KEY = Deno.env.get("ABSTRACT_EMAIL_API_KEY") || "";
-    const PHONE_API_KEY = Deno.env.get("ABSTRACT_PHONE_API_KEY") || "";
-
-    // ── Email validation endpoint ──────────────────────────────────────────────
-    if (validateEmailReq) {
-      const result = await validateEmail(validateEmailReq, EMAIL_API_KEY);
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // ── Phone validation endpoint ──────────────────────────────────────────────
-    if (validatePhoneReq) {
-      const result = await validatePhone(validatePhoneReq, PHONE_API_KEY);
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
 
     // ── Risk scoring endpoint ──────────────────────────────────────────────────
     if (riskData) {
@@ -246,18 +131,23 @@ STEP 1 — Ask if they are a freelancer, salaried employee, business owner, or s
 STEP 2 — Ask them to upload their PAN card using the + button.
 STEP 3 — Ask them to upload their Aadhaar card. IMPORTANT: Cross-check the name on both documents. If names do not match, immediately say the documents don't match and ask to re-upload. Only continue when names match.
 STEP 4 — INCOME:
-  • If the user is a STUDENT: DO NOT ask for monthly income. Instead, skip directly to face verification. Students get a Student Savings Account and a Secured Student Card. Never suggest high-value loans for students.
+  • If the user is a STUDENT: DO NOT ask for monthly income. Skip directly to face verification. Students get a Student Savings Account and a Secured Student Card. Never suggest high-value loans for students.
   • For all others: Ask for their monthly income in INR to assess their financial profile.
 STEP 5 — Say face verification is next and that the camera will open.
 STEP 6 — After face verification succeeds, say you are running risk scoring.
   • For students: Say "Limited credit history detected. Recommending secured student products." instead of a generic risk level.
-STEP 7 — Ask for their email address to send account details (tell them it will be validated). The email format must be username@domain.com (e.g. john@gmail.com).
-STEP 8 — Ask for their Indian mobile number (+91) to send an SMS confirmation (tell them only Indian numbers are accepted).
-STEP 9 — Confirm account creation. Share the account details directly in the chat too (account number, IFSC, branch) in case SMS/email doesn't reach them.
+STEP 7 — Onboarding is complete! Generate and display the account details directly in the chat in this exact format:
 
-Document handling: When a user uploads a document image, use vision to extract the name, ID number, and document type. Compare across documents if multiple have been uploaded.
+🎉 Welcome to OnboardX! Your account has been created successfully.
 
-Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally 🎉. Stay strictly on banking onboarding. Never break character.`;
+📋 Account Details:
+• Account Number: [generate a random 12-digit number]
+• IFSC Code: ONBX0001234
+• Branch: OnboardX Digital Branch, Mumbai
+• Account Type: [based on employment type — e.g. Savings Account, Current Account, Student Savings Account]
+• Account Holder: [use name from documents]
+
+Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally 🎉. Stay strictly on banking onboarding. Never break character. Do NOT ask for email or phone number at any point.`;
 
     const contentArray: unknown[] = [{ type: "text", text: messages[messages.length - 1]?.content || "" }];
     if (fileData && fileData.base64 && fileData.mimeType) {
