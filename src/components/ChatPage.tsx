@@ -297,9 +297,25 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       return;
     }
 
+    const isStudent = onboardingRef.current.employmentType === "student";
     setOnboarding((prev) => ({ ...prev, monthlyIncome: income, step: "chat" }));
 
-    // Run risk scoring
+    if (isStudent) {
+      const studentMsg: Message = {
+        role: "bot",
+        content: `🎓 **Student Profile Detected**\n\n🔵 Limited credit history detected. Recommending secured student products.\n\n✅ Recommended: Student Savings Account + Secured Student Card\n❌ High-value loans: Not applicable`,
+      };
+      const newMsgs = [...currentMessages, studentMsg];
+      setMessages(newMsgs);
+      setOnboarding((prev) => ({ ...prev, riskResult: { probability: 0.65, level: "High", dti: 55, explanation: "Limited credit history detected. Recommending secured student products." } }));
+      setProgress((p) => Math.min(p + 15, 95));
+      setTimeout(() => {
+        streamMessage(`User is a student with no income. Recommend student savings account and secured card. Ask for their email address next.`, newMsgs);
+      }, 1200);
+      return;
+    }
+
+    // Run risk scoring for non-students
     const riskResult = await runRiskScoring(income, onboardingRef.current.employmentType);
     if (riskResult) {
       setOnboarding((prev) => ({ ...prev, riskResult }));
@@ -572,7 +588,9 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           className="absolute top-[16px] right-6 z-10 text-xs font-bold px-3 py-1 rounded-full border"
           style={{ color: riskColor, borderColor: riskColor, background: `${riskColor}18` }}
         >
-          {onboarding.riskResult.level} Risk
+          {onboarding.employmentType === "student"
+            ? "🎓 Student"
+            : `${onboarding.riskResult.level} Risk`}
         </div>
       )}
 
