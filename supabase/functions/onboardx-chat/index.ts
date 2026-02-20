@@ -5,15 +5,141 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+// ── Logistic Regression Risk Scoring ──────────────────────────────────────────
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+interface RiskInputs {
+  monthlyIncome: number;       // in INR
+  employmentType: string;      // freelancer | salaried | business | student
+  age?: number;
+  documentsVerified: boolean;
+  faceVerified: boolean;
+}
+
+interface RiskResult {
+  probability: number;         // 0.0 – 1.0
+  level: "Low" | "Medium" | "High";
+  dti: number;                 // estimated debt-to-income ratio
+  explanation: string;
+}
+
+function calculateRisk(inputs: RiskInputs): RiskResult {
+  // Coefficients (b0 + b1*x1 + ...)
+  const b0 = -1.5; // intercept
+
+  // Income factor: higher income → lower risk
+  const incomeScore = inputs.monthlyIncome > 80000 ? -1.2
+    : inputs.monthlyIncome > 40000 ? -0.5
+    : inputs.monthlyIncome > 20000 ? 0.2
+    : inputs.monthlyIncome > 10000 ? 0.8
+    : 1.5;
+
+  // Employment type factor
+  const employmentScore: Record<string, number> = {
+    salaried: -0.8,
+    business: 0.1,
+    freelancer: 0.6,
+    student: 1.2,
+  };
+  const empScore = employmentScore[inputs.employmentType.toLowerCase()] ?? 0.3;
+
+  // Verification bonus
+  const verifyScore = (inputs.documentsVerified ? -0.4 : 0.3) + (inputs.faceVerified ? -0.3 : 0.2);
+
+  // Estimated DTI (debt-to-income): simplified — students/freelancers assumed higher
+  const dti = inputs.employmentType === "student" ? 55
+    : inputs.employmentType === "freelancer" ? 42
+    : inputs.employmentType === "business" ? 35
+    : Math.max(10, 40 - (inputs.monthlyIncome / 5000));
+
+  const z = b0 + incomeScore + empScore + verifyScore;
+  const probability = sigmoid(z);
+
+  const level: RiskResult["level"] = probability < 0.35 ? "Low" : probability < 0.65 ? "Medium" : "High";
+
+  const incomeLabel = inputs.monthlyIncome > 80000 ? "high income"
+    : inputs.monthlyIncome > 40000 ? "moderate income"
+    : inputs.monthlyIncome > 20000 ? "lower-moderate income"
+    : "low income";
+
+  const explanation = `Customer has ${(probability * 100).toFixed(0)}% probability of default due to `
+    + `${incomeLabel} (₹${inputs.monthlyIncome.toLocaleString("en-IN")}/mo), `
+    + `${inputs.employmentType} employment, and estimated DTI of ${dti.toFixed(0)}%.`
+    + (inputs.documentsVerified && inputs.faceVerified ? " Identity fully verified." : " Incomplete verification increases risk.");
+
+  return { probability, level, dti, explanation };
+}
+
+// ── AbstractAPI Email Validation ───────────────────────────────────────────────
+async function validateEmail(email: string, apiKey: string): Promise<{ valid: boolean; reason: string }> {
+  try {
+    const url = `https://emailvalidation.abstractapi.com/v1/?api_key=${apiKey}&email=${encodeURIComponent(email)}`;
+    const res = await fetch(url);
+    if (!res.ok) return { valid: false, reason: "Validation service unavailable" };
+    const data = await res.json();
+    const valid = data.deliverability === "DELIVERABLE" && data.is_valid_format?.value === true;
+    return { valid, reason: valid ? "Email is valid" : `Email issue: ${data.deliverability}` };
+  } catch {
+    return { valid: false, reason: "Could not validate email" };
+  }
+}
+
+// ── AbstractAPI Phone Validation ───────────────────────────────────────────────
+async function validatePhone(phone: string, apiKey: string): Promise<{ valid: boolean; isIndian: boolean; reason: string }> {
+  try {
+    const url = `https://phonevalidation.abstractapi.com/v1/?api_key=${apiKey}&phone=${encodeURIComponent(phone)}`;
+    const res = await fetch(url);
+    if (!res.ok) return { valid: false, isIndian: false, reason: "Validation service unavailable" };
+    const data = await res.json();
+    const isIndian = data.country?.code === "IN";
+    const valid = data.valid === true;
+    if (!isIndian) return { valid: false, isIndian: false, reason: "Only Indian mobile numbers (+91) are accepted." };
+    return { valid, isIndian: true, reason: valid ? "Phone is valid" : "Phone number appears invalid" };
+  } catch {
+    return { valid: false, isIndian: false, reason: "Could not validate phone" };
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { messages, fileData, faceVerifyMode } = await req.json();
+    const body = await req.json();
+    const { messages, fileData, faceVerifyMode, riskData, validateEmailReq, validatePhoneReq } = body;
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    // Face verification mode: pass messages directly to vision model
+    const EMAIL_API_KEY = Deno.env.get("ABSTRACT_EMAIL_API_KEY") || "";
+    const PHONE_API_KEY = Deno.env.get("ABSTRACT_PHONE_API_KEY") || "";
+
+    // ── Email validation endpoint ──────────────────────────────────────────────
+    if (validateEmailReq) {
+      const result = await validateEmail(validateEmailReq, EMAIL_API_KEY);
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Phone validation endpoint ──────────────────────────────────────────────
+    if (validatePhoneReq) {
+      const result = await validatePhone(validatePhoneReq, PHONE_API_KEY);
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Risk scoring endpoint ──────────────────────────────────────────────────
+    if (riskData) {
+      const result = calculateRisk(riskData);
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Face verification mode ─────────────────────────────────────────────────
     if (faceVerifyMode) {
       const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
         method: "POST",
@@ -26,7 +152,12 @@ serve(async (req) => {
           messages: [
             {
               role: "system",
-              content: "You are a face verification AI. Analyze images for liveness detection and face matching. Always respond ONLY with a raw JSON object (no markdown, no code blocks) with keys: liveness (boolean), match (boolean or null if no document provided), reason (string, max 20 words).",
+              content: `You are a face verification AI. Analyse:
+1. LIVENESS: Is the selfie a live real person (not a photo of a photo, screen, mask, or printed image)?
+2. MATCH: If a document image is provided, does the face in the selfie match the face in the document?
+
+Respond ONLY with a raw JSON object (no markdown, no code blocks):
+{ "liveness": boolean, "match": boolean | null, "reason": string (max 25 words) }`,
             },
             ...messages,
           ],
@@ -47,32 +178,35 @@ serve(async (req) => {
       });
     }
 
-    const systemPrompt = `You are OnboardX, a friendly AI banking onboarding assistant. Help users open a bank account in under 3 minutes. Guide them step by step:
-1) Ask if they are freelancer/salaried/business/student
-2) Ask to upload PAN card via the + button
-3) Ask to upload Aadhaar — IMPORTANT: When both PAN and Aadhaar have been uploaded, cross-check the name on both documents. If the names do not match, immediately say the documents don't match and ask to re-upload. Only continue if names match.
-4) After documents verified, say face verification is next and that the camera will open
-5) After face verification succeeds, mention risk scoring
-6) Confirm account creation
+    // ── Main onboarding chat ───────────────────────────────────────────────────
+    const systemPrompt = `You are OnboardX, a friendly AI banking onboarding assistant for Indian users. Help users open a bank account quickly. Guide them in this exact order:
 
-When a user uploads a document image, use vision to extract the name, ID number, and document type. Compare across documents if multiple have been uploaded.
+STEP 1 — Ask if they are a freelancer, salaried employee, business owner, or student.
+STEP 2 — Ask them to upload their PAN card using the + button.
+STEP 3 — Ask them to upload their Aadhaar card. IMPORTANT: Cross-check the name on both documents. If names do not match, immediately say the documents don't match and ask to re-upload. Only continue when names match.
+STEP 4 — Ask for their monthly income in INR to assess their financial profile.
+STEP 5 — Say face verification is next and that the camera will open.
+STEP 6 — After face verification succeeds, say you are running risk scoring.
+STEP 7 — Ask for their email address to send account details (tell them it will be validated).
+STEP 8 — Ask for their Indian mobile number (+91) to send an SMS confirmation (tell them only Indian numbers are accepted).
+STEP 9 — Confirm account creation. Share the account details directly in the chat too (account number, IFSC, branch) in case SMS/email doesn't reach them.
 
-Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally. Stay strictly on banking onboarding topic. Never break character.`;
+Document handling: When a user uploads a document image, use vision to extract the name, ID number, and document type. Compare across documents if multiple have been uploaded.
 
-    const contentArray: any[] = [{ type: "text", text: messages[messages.length - 1]?.content || "" }];
+Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally 🎉. Stay strictly on banking onboarding. Never break character.`;
 
-    // If file data is included, add it as image
+    const contentArray: unknown[] = [{ type: "text", text: messages[messages.length - 1]?.content || "" }];
     if (fileData && fileData.base64 && fileData.mimeType) {
       contentArray.unshift({
         type: "image_url",
-        image_url: { url: `data:${fileData.mimeType};base64,${fileData.base64}` }
+        image_url: { url: `data:${fileData.mimeType};base64,${fileData.base64}` },
       });
     }
 
     const apiMessages = [
       { role: "system", content: systemPrompt },
       ...messages.slice(0, -1),
-      { role: "user", content: fileData ? contentArray : messages[messages.length - 1]?.content }
+      { role: "user", content: fileData ? contentArray : messages[messages.length - 1]?.content },
     ];
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
