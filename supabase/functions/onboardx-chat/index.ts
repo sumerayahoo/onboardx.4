@@ -75,10 +75,21 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
 // ── AbstractAPI Email Validation ───────────────────────────────────────────────
 async function validateEmail(email: string, apiKey: string): Promise<{ valid: boolean; reason: string }> {
   try {
+    // Try AbstractAPI v2 first (new format)
     const url = `https://emailvalidation.abstractapi.com/v1/?api_key=${apiKey}&email=${encodeURIComponent(email)}`;
     const res = await fetch(url);
     if (!res.ok) return { valid: false, reason: "Validation service unavailable" };
     const data = await res.json();
+
+    // AbstractAPI v2 response format
+    if (data.email_deliverability) {
+      const status = data.email_deliverability.status?.toLowerCase();
+      const isFormatValid = data.email_deliverability.is_format_valid === true;
+      const valid = (status === "deliverable" || status === "risky") && isFormatValid;
+      return { valid, reason: valid ? "Email is valid" : `Email issue: ${status}` };
+    }
+
+    // AbstractAPI v1 legacy format
     const valid = data.deliverability === "DELIVERABLE" && data.is_valid_format?.value === true;
     return { valid, reason: valid ? "Email is valid" : `Email issue: ${data.deliverability}` };
   } catch {
@@ -184,10 +195,13 @@ Respond ONLY with a raw JSON object (no markdown, no code blocks):
 STEP 1 — Ask if they are a freelancer, salaried employee, business owner, or student.
 STEP 2 — Ask them to upload their PAN card using the + button.
 STEP 3 — Ask them to upload their Aadhaar card. IMPORTANT: Cross-check the name on both documents. If names do not match, immediately say the documents don't match and ask to re-upload. Only continue when names match.
-STEP 4 — Ask for their monthly income in INR to assess their financial profile.
+STEP 4 — INCOME:
+  • If the user is a STUDENT: DO NOT ask for monthly income. Instead, skip directly to face verification. Students get a Student Savings Account and a Secured Student Card. Never suggest high-value loans for students.
+  • For all others: Ask for their monthly income in INR to assess their financial profile.
 STEP 5 — Say face verification is next and that the camera will open.
 STEP 6 — After face verification succeeds, say you are running risk scoring.
-STEP 7 — Ask for their email address to send account details (tell them it will be validated).
+  • For students: Say "Limited credit history detected. Recommending secured student products." instead of a generic risk level.
+STEP 7 — Ask for their email address to send account details (tell them it will be validated). The email format must be username@domain.com (e.g. john@gmail.com).
 STEP 8 — Ask for their Indian mobile number (+91) to send an SMS confirmation (tell them only Indian numbers are accepted).
 STEP 9 — Confirm account creation. Share the account details directly in the chat too (account number, IFSC, branch) in case SMS/email doesn't reach them.
 
