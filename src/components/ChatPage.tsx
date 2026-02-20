@@ -24,14 +24,12 @@ interface RiskResult {
 interface OnboardingState {
   employmentType: string;
   monthlyIncome: number | null;
-  email: string;
-  phone: string;
   documentsVerified: boolean;
   faceVerified: boolean;
   accountNumber: string;
   ifsc: string;
   riskResult: RiskResult | null;
-  step: "chat" | "awaitingIncome" | "awaitingEmail" | "awaitingPhone" | "done";
+  step: "chat" | "awaitingIncome" | "done";
 }
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -52,21 +50,6 @@ const INCOME_TRIGGER_PHRASES = [
   "your income",
 ];
 
-const EMAIL_TRIGGER_PHRASES = [
-  "email address",
-  "send account details",
-  "your email",
-];
-
-const PHONE_TRIGGER_PHRASES = [
-  "mobile number",
-  "indian mobile",
-  "phone number",
-  "+91",
-  "sms confirmation",
-];
-
-// Generate a fake but realistic account number and IFSC
 function generateAccountDetails() {
   const accountNumber = "3" + Math.random().toString().slice(2, 13);
   const ifscCodes = ["ONBX0001234", "ONBX0005678", "ONBX0009012"];
@@ -97,8 +80,6 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const [onboarding, setOnboarding] = useState<OnboardingState>({
     employmentType: "",
     monthlyIncome: null,
-    email: "",
-    phone: "",
     documentsVerified: false,
     faceVerified: false,
     accountNumber: "",
@@ -111,6 +92,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatStarted = useRef(false);
   const faceVerifyTriggered = useRef(false);
+  const accountCreated = useRef(false);
   const onboardingRef = useRef(onboarding);
 
   useEffect(() => { onboardingRef.current = onboarding; }, [onboarding]);
@@ -131,7 +113,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     }
   }, []);
 
-  // ── Risk Scoring ────────────────────────────────────────────────────────────
+  // ── Risk Scoring ─────────────────────────────────────────────────────────────
   async function runRiskScoring(income: number, employmentType: string) {
     const current = onboardingRef.current;
     const resp = await callEdgeFunction({
@@ -146,22 +128,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     return await resp.json() as RiskResult;
   }
 
-  // ── Email Validation ────────────────────────────────────────────────────────
-  async function validateEmail(email: string): Promise<boolean> {
-    const resp = await callEdgeFunction({ validateEmailReq: email });
-    if (!resp.ok) return true; // fallback: accept if service down
-    const data = await resp.json();
-    return data.valid === true;
-  }
-
-  // ── Phone Validation ────────────────────────────────────────────────────────
-  async function validatePhone(phone: string): Promise<{ valid: boolean; reason: string }> {
-    const resp = await callEdgeFunction({ validatePhoneReq: phone });
-    if (!resp.ok) return { valid: true, reason: "" }; // fallback
-    return await resp.json();
-  }
-
-  // ── Detect employment type from message ─────────────────────────────────────
+  // ── Detect employment type ────────────────────────────────────────────────────
   function detectEmployment(text: string): string {
     const t = text.toLowerCase();
     if (t.includes("freelan")) return "freelancer";
@@ -171,7 +138,49 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     return "";
   }
 
-  // ── Stream Message ──────────────────────────────────────────────────────────
+  // ── Finalize account creation ─────────────────────────────────────────────────
+  function finalizeAccount(currentMessages: Message[], riskResult?: RiskResult | null) {
+    if (accountCreated.current) return;
+    accountCreated.current = true;
+
+    const { accountNumber, ifsc } = generateAccountDetails();
+    const ob = onboardingRef.current;
+    const risk = riskResult ?? ob.riskResult;
+
+    const accountTypeMap: Record<string, string> = {
+      student: "Student Savings Account",
+      salaried: "Savings Account",
+      freelancer: "Freelancer Current Account",
+      business: "Business Current Account",
+    };
+    const accountType = accountTypeMap[ob.employmentType] || "Savings Account";
+
+    const riskBadge = risk
+      ? `\n🔍 Risk Level: ${risk.level} (${(risk.probability * 100).toFixed(0)}% default probability)`
+      : "";
+
+    const accountMsg: Message = {
+      role: "bot",
+      isAccountDetails: true,
+      content:
+        `🎉 Your OnboardX Bank Account is Created!\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🏦 Account Number: ${accountNumber}\n` +
+        `🔢 IFSC Code: ${ifsc}\n` +
+        `🏛️ Branch: OnboardX Digital Bank, Mumbai\n` +
+        `💼 Account Type: ${accountType}\n` +
+        (ob.monthlyIncome ? `💰 Monthly Income: ₹${ob.monthlyIncome.toLocaleString("en-IN")}\n` : "") +
+        riskBadge +
+        `\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `Please save these details. Welcome to OnboardX! 🚀`,
+    };
+
+    setOnboarding((prev) => ({ ...prev, accountNumber, ifsc, step: "done" }));
+    setMessages([...currentMessages, accountMsg]);
+    setProgress(100);
+  }
+
+  // ── Stream Message ────────────────────────────────────────────────────────────
   async function streamMessage(
     userText: string,
     history: Message[],
@@ -260,20 +269,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
 
       // Detect income request
       const triggersIncome = INCOME_TRIGGER_PHRASES.some((p) => lower.includes(p));
-      if (triggersIncome) {
+      if (triggersIncome && onboardingRef.current.step !== "done") {
         setOnboarding((prev) => ({ ...prev, step: "awaitingIncome" }));
-      }
-
-      // Detect email request
-      const triggersEmail = EMAIL_TRIGGER_PHRASES.some((p) => lower.includes(p));
-      if (triggersEmail && !onboardingRef.current.email) {
-        setOnboarding((prev) => ({ ...prev, step: "awaitingEmail" }));
-      }
-
-      // Detect phone request
-      const triggersPhone = PHONE_TRIGGER_PHRASES.some((p) => lower.includes(p));
-      if (triggersPhone && !onboardingRef.current.phone) {
-        setOnboarding((prev) => ({ ...prev, step: "awaitingPhone" }));
       }
 
       setProgress((p) => Math.min(p + 12, 95));
@@ -288,12 +285,11 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     setIsLoading(false);
   }
 
-  // ── Handle income input ─────────────────────────────────────────────────────
+  // ── Handle income input ───────────────────────────────────────────────────────
   async function handleIncomeInput(text: string, currentMessages: Message[]) {
     const income = parseFloat(text.replace(/[^0-9.]/g, ""));
     if (!income || income < 1000) {
-      const errMsg: Message = { role: "bot", content: "Please enter a valid monthly income amount in INR (e.g. 45000)." };
-      setMessages((prev) => [...prev, errMsg]);
+      setMessages((prev) => [...prev, { role: "bot", content: "Please enter a valid monthly income amount in INR (e.g. 45000)." }]);
       return;
     }
 
@@ -301,17 +297,21 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     setOnboarding((prev) => ({ ...prev, monthlyIncome: income, step: "chat" }));
 
     if (isStudent) {
+      const studentRisk: RiskResult = {
+        probability: 0.65,
+        level: "High",
+        dti: 55,
+        explanation: "Limited credit history detected. Recommending secured student products.",
+      };
       const studentMsg: Message = {
         role: "bot",
-        content: `🎓 **Student Profile Detected**\n\n🔵 Limited credit history detected. Recommending secured student products.\n\n✅ Recommended: Student Savings Account + Secured Student Card\n❌ High-value loans: Not applicable`,
+        content: `🎓 Student Profile Detected\n\n🔵 Limited credit history detected. Recommending secured student products.\n\n✅ Recommended: Student Savings Account + Secured Student Card\n❌ High-value loans: Not applicable`,
       };
       const newMsgs = [...currentMessages, studentMsg];
       setMessages(newMsgs);
-      setOnboarding((prev) => ({ ...prev, riskResult: { probability: 0.65, level: "High", dti: 55, explanation: "Limited credit history detected. Recommending secured student products." } }));
+      setOnboarding((prev) => ({ ...prev, riskResult: studentRisk }));
       setProgress((p) => Math.min(p + 15, 95));
-      setTimeout(() => {
-        streamMessage(`User is a student with no income. Recommend student savings account and secured card. Ask for their email address next.`, newMsgs);
-      }, 1200);
+      setTimeout(() => finalizeAccount(newMsgs, studentRisk), 1200);
       return;
     }
 
@@ -319,149 +319,37 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     const riskResult = await runRiskScoring(income, onboardingRef.current.employmentType);
     if (riskResult) {
       setOnboarding((prev) => ({ ...prev, riskResult }));
-      const riskColor = riskResult.level === "Low" ? "🟢" : riskResult.level === "Medium" ? "🟡" : "🔴";
+      const riskEmoji = riskResult.level === "Low" ? "🟢" : riskResult.level === "Medium" ? "🟡" : "🔴";
       const riskMsg: Message = {
         role: "bot",
-        content: `${riskColor} **Risk Assessment — ${riskResult.level} Risk**\n\n${riskResult.explanation}\n\nDefault probability: ${(riskResult.probability * 100).toFixed(0)}% | Estimated DTI: ${riskResult.dti.toFixed(0)}%`,
+        content: `${riskEmoji} Risk Assessment — ${riskResult.level} Risk\n\n${riskResult.explanation}\n\nDefault probability: ${(riskResult.probability * 100).toFixed(0)}% | Estimated DTI: ${riskResult.dti.toFixed(0)}%`,
       };
       const newMsgs = [...currentMessages, riskMsg];
       setMessages(newMsgs);
       setProgress((p) => Math.min(p + 15, 95));
-
-      // Continue onboarding
-      setTimeout(() => {
-        streamMessage(
-          `User's monthly income is ₹${income.toLocaleString("en-IN")}. Risk level is ${riskResult.level}. Continue to ask for face verification if not done, then ask for their email address.`,
-          newMsgs
-        );
-      }, 1200);
+      setTimeout(() => finalizeAccount(newMsgs, riskResult), 1200);
     } else {
-      streamMessage(
-        `User's monthly income is ₹${income.toLocaleString("en-IN")}. Continue onboarding — ask for face verification if not done, then email address.`,
-        currentMessages
-      );
+      setTimeout(() => finalizeAccount(currentMessages), 1200);
     }
   }
 
-  // ── Handle email input ──────────────────────────────────────────────────────
-  async function handleEmailInput(email: string, currentMessages: Message[]) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setMessages((prev) => [...prev, { role: "bot", content: "That doesn't look like a valid email. Please try again." }]);
-      return;
-    }
-
-    const validatingMsg: Message = { role: "bot", content: "⏳ Validating your email address..." };
-    setMessages((prev) => [...prev, validatingMsg]);
-
-    const isValid = await validateEmail(email);
-    setMessages((prev) => prev.filter((m) => m.content !== "⏳ Validating your email address..."));
-
-    if (!isValid) {
-      setMessages((prev) => [...prev, { role: "bot", content: "❌ This email address appears invalid or undeliverable. Please provide a valid email." }]);
-      return;
-    }
-
-    setOnboarding((prev) => ({ ...prev, email, step: "chat" }));
-    const okMsg: Message = { role: "bot", content: `✅ Email validated! Account details will be sent to **${email}** once your account is created.` };
-    const newMsgs = [...currentMessages, okMsg];
-    setMessages(newMsgs);
-    setProgress((p) => Math.min(p + 10, 95));
-
-    setTimeout(() => {
-      streamMessage(
-        `User's email ${email} is validated. Now ask for their Indian mobile number (+91) to send SMS confirmation.`,
-        newMsgs
-      );
-    }, 800);
-  }
-
-  // ── Handle phone input ──────────────────────────────────────────────────────
-  async function handlePhoneInput(phone: string, currentMessages: Message[]) {
-    // Strip spaces/dashes
-    const cleaned = phone.replace(/[\s\-().]/g, "");
-
-    const validatingMsg: Message = { role: "bot", content: "⏳ Validating your mobile number..." };
-    setMessages((prev) => [...prev, validatingMsg]);
-
-    const result = await validatePhone(cleaned);
-    setMessages((prev) => prev.filter((m) => m.content !== "⏳ Validating your mobile number..."));
-
-    if (!result.valid) {
-      setMessages((prev) => [...prev, { role: "bot", content: `❌ ${result.reason || "Invalid phone number. Please enter a valid Indian mobile number (+91)."}` }]);
-      return;
-    }
-
-    setOnboarding((prev) => ({ ...prev, phone: cleaned, step: "done" }));
-    const okMsg: Message = { role: "bot", content: `✅ Mobile number validated! SMS confirmation will be sent to ${cleaned}.` };
-    const newMsgs = [...currentMessages, okMsg];
-    setMessages(newMsgs);
-    setProgress(100);
-
-    // Generate account details and show in chat as fallback
-    setTimeout(() => finalizeAccount(newMsgs), 1000);
-  }
-
-  // ── Finalize account creation ───────────────────────────────────────────────
-  async function finalizeAccount(currentMessages: Message[]) {
-    const { accountNumber, ifsc } = generateAccountDetails();
-    setOnboarding((prev) => ({ ...prev, accountNumber, ifsc }));
-
-    const ob = onboardingRef.current;
-    const riskBadge = ob.riskResult
-      ? `\n🔍 Risk Level: ${ob.riskResult.level} (${(ob.riskResult.probability * 100).toFixed(0)}% default probability)`
-      : "";
-
-    const accountMsg: Message = {
-      role: "bot",
-      isAccountDetails: true,
-      content:
-        `🎉 **Your OnboardX Bank Account is Created!**\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `🏦 **Account Number:** ${accountNumber}\n` +
-        `🔢 **IFSC Code:** ${ifsc}\n` +
-        `🏛️ **Branch:** OnboardX Digital Bank\n` +
-        `📧 **Email:** ${ob.email || "Not provided"}\n` +
-        `📱 **Mobile:** ${ob.phone || "Not provided"}\n` +
-        `💼 **Type:** ${ob.employmentType || "Savings"} Account\n` +
-        `💰 **Monthly Income:** ${ob.monthlyIncome ? `₹${ob.monthlyIncome.toLocaleString("en-IN")}` : "Not provided"}\n` +
-        riskBadge +
-        `\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `These details have also been sent to your email & SMS. Welcome aboard! 🚀`,
-    };
-
-    const newMsgs = [...currentMessages, accountMsg];
-    setMessages(newMsgs);
-    setProgress(100);
-  }
-
-  // ── Send message ────────────────────────────────────────────────────────────
+  // ── Send message ──────────────────────────────────────────────────────────────
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if (!text || isLoading || onboarding.step === "done") return;
 
     const userMsg: Message = { role: "user", content: text };
     const newHistory = [...messages, userMsg];
     setMessages(newHistory);
     setInput("");
 
-    // Detect employment type passively
     const emp = detectEmployment(text);
     if (emp && !onboarding.employmentType) {
       setOnboarding((prev) => ({ ...prev, employmentType: emp }));
     }
 
-    // Route based on onboarding step
     if (onboarding.step === "awaitingIncome") {
       await handleIncomeInput(text, newHistory);
-      return;
-    }
-    if (onboarding.step === "awaitingEmail") {
-      await handleEmailInput(text, newHistory);
-      return;
-    }
-    if (onboarding.step === "awaitingPhone") {
-      await handlePhoneInput(text, newHistory);
       return;
     }
 
@@ -524,7 +412,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       setProgress((p) => Math.min(p + 15, 95));
       setTimeout(() => {
         streamMessage(
-          "Face verification passed. If income hasn't been asked yet, ask for their monthly income in INR. Otherwise continue with email.",
+          "Face verification passed. If income hasn't been collected yet, ask for their monthly income in INR. Otherwise finalize the account.",
           newMessages
         );
       }, 1500);
@@ -551,7 +439,6 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     </svg>
   );
 
-  // ── Risk level color ────────────────────────────────────────────────────────
   const riskColor = onboarding.riskResult?.level === "Low" ? "#22c55e"
     : onboarding.riskResult?.level === "Medium" ? "#eab308"
     : onboarding.riskResult?.level === "High" ? "#ef4444"
@@ -569,7 +456,6 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         style={{ background: "radial-gradient(circle at center, transparent 40%, black 100%)" }}
       />
 
-      {/* Back button */}
       <button
         onClick={onClose}
         className="absolute top-5 left-6 z-10 bg-transparent border-none text-white text-2xl cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
@@ -577,24 +463,19 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         ←
       </button>
 
-      {/* Logo */}
       <div className="absolute top-[18px] left-1/2 -translate-x-1/2 text-xl font-black z-10 tracking-wide">
         Onboard<span className="text-[#ff2a2a]" style={{ textShadow: "0 0 10px red" }}>X</span>
       </div>
 
-      {/* Risk badge */}
       {onboarding.riskResult && riskColor && (
         <div
           className="absolute top-[16px] right-6 z-10 text-xs font-bold px-3 py-1 rounded-full border"
           style={{ color: riskColor, borderColor: riskColor, background: `${riskColor}18` }}
         >
-          {onboarding.employmentType === "student"
-            ? "🎓 Student"
-            : `${onboarding.riskResult.level} Risk`}
+          {onboarding.employmentType === "student" ? "🎓 Student" : `${onboarding.riskResult.level} Risk`}
         </div>
       )}
 
-      {/* Face verification overlay */}
       {showFaceVerify && (
         <FaceVerification
           documentBase64={documentBase64}
@@ -603,9 +484,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         />
       )}
 
-      {/* Main chat area */}
       <div className="relative z-[5] flex-1 flex flex-col items-center justify-center px-[6%] pt-16 pb-4">
-        {/* Progress bar */}
         <div className="w-full max-w-[780px] mb-4 flex flex-col gap-1">
           <div className="w-full h-[3px] bg-white/10 rounded-full overflow-hidden">
             <div
@@ -622,20 +501,12 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           </div>
         </div>
 
-        {/* Messages */}
         <div
           className="w-full max-w-[780px] flex flex-col gap-4 mb-6 overflow-y-auto pr-1"
-          style={{
-            maxHeight: "55vh",
-            scrollbarWidth: "thin",
-            scrollbarColor: "rgba(255,0,0,0.3) transparent",
-          }}
+          style={{ maxHeight: "55vh", scrollbarWidth: "thin", scrollbarColor: "rgba(255,0,0,0.3) transparent" }}
         >
           {messages.length === 0 && (
-            <p
-              className="text-center text-2xl py-5"
-              style={{ fontFamily: "Georgia, serif", textShadow: "0 0 20px rgba(255,255,255,0.4)" }}
-            >
+            <p className="text-center text-2xl py-5" style={{ fontFamily: "Georgia, serif", textShadow: "0 0 20px rgba(255,255,255,0.4)" }}>
               Do you want to create a bank account?
             </p>
           )}
@@ -677,7 +548,6 @@ export default function ChatPage({ onClose }: ChatPageProps) {
             </div>
           ))}
 
-          {/* Typing indicator */}
           {isLoading && (
             <div
               className="flex items-center gap-1 px-5 py-3 rounded-[22px] w-auto"
@@ -696,24 +566,12 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Step hint */}
         {onboarding.step === "awaitingIncome" && (
           <div className="w-full max-w-[780px] mb-2 text-xs text-yellow-400 text-center tracking-wider">
             💰 Enter your monthly income in INR (e.g. 45000)
           </div>
         )}
-        {onboarding.step === "awaitingEmail" && (
-          <div className="w-full max-w-[780px] mb-2 text-xs text-blue-400 text-center tracking-wider">
-            📧 Enter your email address
-          </div>
-        )}
-        {onboarding.step === "awaitingPhone" && (
-          <div className="w-full max-w-[780px] mb-2 text-xs text-green-400 text-center tracking-wider">
-            📱 Enter your Indian mobile number (e.g. +91 98765 43210)
-          </div>
-        )}
 
-        {/* Input bar */}
         <div
           className="w-full max-w-[780px] flex items-center rounded-[50px] gap-3"
           style={{
@@ -723,7 +581,6 @@ export default function ChatPage({ onClose }: ChatPageProps) {
             backdropFilter: "blur(10px)",
           }}
         >
-          {/* Upload button */}
           <button
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center justify-center flex-shrink-0 w-8 h-8 rounded-full text-[#aaa] text-xl cursor-pointer transition-colors hover:text-white hover:border-white"
@@ -740,14 +597,13 @@ export default function ChatPage({ onClose }: ChatPageProps) {
             onKeyDown={handleKeyDown}
             placeholder={
               onboarding.step === "awaitingIncome" ? "Enter monthly income in ₹..."
-              : onboarding.step === "awaitingEmail" ? "Enter your email address..."
-              : onboarding.step === "awaitingPhone" ? "Enter +91 mobile number..."
-              : "Ask anything"
+              : onboarding.step === "done" ? "Account created! 🎉"
+              : "Type your message..."
             }
-            className="flex-1 bg-transparent border-none outline-none text-white text-base tracking-wide placeholder:text-[#666]"
+            disabled={onboarding.step === "done"}
+            className="flex-1 bg-transparent border-none outline-none text-white text-base tracking-wide placeholder:text-[#666] disabled:opacity-40"
           />
 
-          {/* Camera button */}
           <button
             onClick={() => setShowFaceVerify(true)}
             className="w-10 h-10 rounded-full flex items-center justify-center text-[#aaa] text-lg flex-shrink-0 hover:text-white transition-colors bg-transparent border-none cursor-pointer"
@@ -759,10 +615,9 @@ export default function ChatPage({ onClose }: ChatPageProps) {
             </svg>
           </button>
 
-          {/* Send button */}
           <button
             onClick={sendMessage}
-            disabled={isLoading || !input.trim()}
+            disabled={isLoading || !input.trim() || onboarding.step === "done"}
             className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 cursor-pointer hover:scale-110 transition-transform border-none disabled:opacity-50"
             style={{ background: "white", color: "black" }}
             title="Send"
