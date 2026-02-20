@@ -2,11 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import ChatStarCanvas from "./ChatStarCanvas";
 import FaceVerification from "./FaceVerification";
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 interface Message {
   role: "user" | "bot";
   content: string;
   isFile?: boolean;
-  fileName?: string;
   isAccountDetails?: boolean;
 }
 
@@ -21,18 +22,21 @@ interface RiskResult {
   explanation: string;
 }
 
+type OnboardingStep = "chat" | "awaitingIncome" | "awaitingFace" | "done";
+
 interface OnboardingState {
   employmentType: string;
   monthlyIncome: number | null;
   documentsVerified: boolean;
   faceVerified: boolean;
-  accountNumber: string;
-  ifsc: string;
   riskResult: RiskResult | null;
-  step: "chat" | "awaitingIncome" | "done";
+  step: OnboardingStep;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 const FACE_TRIGGER_PHRASES = [
   "face verification",
@@ -50,24 +54,36 @@ const INCOME_TRIGGER_PHRASES = [
   "your income",
 ];
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function generateAccountDetails() {
-  const accountNumber = "3" + Math.random().toString().slice(2, 13);
+  const accountNumber = "3" + Math.floor(Math.random() * 90000000000 + 10000000000);
   const ifscCodes = ["ONBX0001234", "ONBX0005678", "ONBX0009012"];
   const ifsc = ifscCodes[Math.floor(Math.random() * ifscCodes.length)];
   return { accountNumber, ifsc };
 }
 
+function detectEmployment(text: string): string {
+  const t = text.toLowerCase();
+  if (t.includes("freelan")) return "freelancer";
+  if (t.includes("salar")) return "salaried";
+  if (t.includes("business") || t.includes("owner")) return "business";
+  if (t.includes("student")) return "student";
+  return "";
+}
+
 async function callEdgeFunction(body: Record<string, unknown>) {
-  const resp = await fetch(`${SUPABASE_URL}/functions/v1/onboardx-chat`, {
+  return fetch(`${SUPABASE_URL}/functions/v1/onboardx-chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
     },
     body: JSON.stringify(body),
   });
-  return resp;
 }
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatPage({ onClose }: ChatPageProps) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -75,15 +91,13 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(5);
   const [showFaceVerify, setShowFaceVerify] = useState(false);
-  const [documentBase64, setDocumentBase64] = useState<string | undefined>(undefined);
+  const [documentBase64, setDocumentBase64] = useState<string | undefined>();
 
   const [onboarding, setOnboarding] = useState<OnboardingState>({
     employmentType: "",
     monthlyIncome: null,
     documentsVerified: false,
     faceVerified: false,
-    accountNumber: "",
-    ifsc: "",
     riskResult: null,
     step: "chat",
   });
@@ -91,61 +105,50 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatStarted = useRef(false);
-  const faceVerifyTriggered = useRef(false);
   const accountCreated = useRef(false);
   const onboardingRef = useRef(onboarding);
 
   useEffect(() => { onboardingRef.current = onboarding; }, [onboarding]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => { scrollToBottom(); }, [messages]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   useEffect(() => {
     if (!chatStarted.current) {
       chatStarted.current = true;
-      streamMessage(
-        "Hi! Start the onboarding. Greet the user warmly and ask if they are a freelancer, salaried employee, business owner, or student — in one sentence.",
+      streamBot(
+        "Greet the user warmly and ask if they are a freelancer, salaried employee, business owner, or student — in one short sentence.",
         []
       );
     }
   }, []);
 
-  // ── Risk Scoring ─────────────────────────────────────────────────────────────
-  async function runRiskScoring(income: number, employmentType: string) {
-    const current = onboardingRef.current;
-    const resp = await callEdgeFunction({
-      riskData: {
-        monthlyIncome: income,
-        employmentType: employmentType || current.employmentType || "salaried",
-        documentsVerified: current.documentsVerified,
-        faceVerified: current.faceVerified,
-      },
-    });
-    if (!resp.ok) return null;
-    return await resp.json() as RiskResult;
+  // ── Risk Scoring ────────────────────────────────────────────────────────────
+
+  async function runRiskScoring(income: number): Promise<RiskResult | null> {
+    const ob = onboardingRef.current;
+    try {
+      const resp = await callEdgeFunction({
+        riskData: {
+          monthlyIncome: income,
+          employmentType: ob.employmentType || "salaried",
+          documentsVerified: ob.documentsVerified,
+          faceVerified: ob.faceVerified,
+        },
+      });
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch {
+      return null;
+    }
   }
 
-  // ── Detect employment type ────────────────────────────────────────────────────
-  function detectEmployment(text: string): string {
-    const t = text.toLowerCase();
-    if (t.includes("freelan")) return "freelancer";
-    if (t.includes("salar")) return "salaried";
-    if (t.includes("business") || t.includes("owner")) return "business";
-    if (t.includes("student")) return "student";
-    return "";
-  }
+  // ── Finalize account ────────────────────────────────────────────────────────
 
-  // ── Finalize account creation ─────────────────────────────────────────────────
-  function finalizeAccount(currentMessages: Message[], riskResult?: RiskResult | null) {
+  function finalizeAccount(currentMessages: Message[]) {
     if (accountCreated.current) return;
     accountCreated.current = true;
 
     const { accountNumber, ifsc } = generateAccountDetails();
     const ob = onboardingRef.current;
-    const risk = riskResult ?? ob.riskResult;
 
     const accountTypeMap: Record<string, string> = {
       student: "Student Savings Account",
@@ -155,8 +158,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     };
     const accountType = accountTypeMap[ob.employmentType] || "Savings Account";
 
-    const riskBadge = risk
-      ? `\n🔍 Risk Level: ${risk.level} (${(risk.probability * 100).toFixed(0)}% default probability)`
+    const riskLine = ob.riskResult
+      ? `\n🔍 Risk Level: ${ob.riskResult.level} (${(ob.riskResult.probability * 100).toFixed(0)}% default probability)`
       : "";
 
     const accountMsg: Message = {
@@ -167,42 +170,44 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `🏦 Account Number: ${accountNumber}\n` +
         `🔢 IFSC Code: ${ifsc}\n` +
-        `🏛️ Branch: OnboardX Digital Bank, Mumbai\n` +
+        `🏛️  Branch: OnboardX Digital Bank, Mumbai\n` +
         `💼 Account Type: ${accountType}\n` +
         (ob.monthlyIncome ? `💰 Monthly Income: ₹${ob.monthlyIncome.toLocaleString("en-IN")}\n` : "") +
-        riskBadge +
+        riskLine +
         `\n━━━━━━━━━━━━━━━━━━━━\n\n` +
         `Please save these details. Welcome to OnboardX! 🚀`,
     };
 
-    setOnboarding((prev) => ({ ...prev, accountNumber, ifsc, step: "done" }));
+    setOnboarding((prev) => ({ ...prev, step: "done" }));
     setMessages([...currentMessages, accountMsg]);
     setProgress(100);
   }
 
-  // ── Stream Message ────────────────────────────────────────────────────────────
-  async function streamMessage(
+  // ── Stream bot ──────────────────────────────────────────────────────────────
+
+  async function streamBot(
     userText: string,
     history: Message[],
     fileData?: { base64: string; mimeType: string }
   ) {
     setIsLoading(true);
 
-    const apiMessages = history.map((m) => ({
-      role: m.role === "bot" ? "assistant" : "user",
-      content: m.content,
-    }));
-    apiMessages.push({ role: "user", content: userText });
+    const apiMessages = [
+      ...history.map((m) => ({
+        role: m.role === "bot" ? "assistant" : "user",
+        content: m.content,
+      })),
+      { role: "user", content: userText },
+    ];
 
     let botReply = "";
-    const addBotChunk = (chunk: string) => {
+
+    const appendChunk = (chunk: string) => {
       botReply += chunk;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (last?.role === "bot" && !last.isFile) {
-          return prev.map((m, i) =>
-            i === prev.length - 1 ? { ...m, content: botReply } : m
-          );
+        if (last?.role === "bot" && !last.isFile && !last.isAccountDetails) {
+          return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: botReply } : m);
         }
         return [...prev, { role: "bot", content: botReply }];
       });
@@ -213,130 +218,172 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({ messages: apiMessages, fileData }),
       });
 
       if (!resp.ok || !resp.body) {
-        const errData = await resp.json().catch(() => ({}));
-        setMessages((prev) => [
-          ...prev,
-          { role: "bot", content: errData.error || "Sorry, something went wrong. Please try again." },
-        ]);
+        const err = await resp.json().catch(() => ({}));
+        appendChunk(err.error || "Sorry, something went wrong. Please try again.");
         setIsLoading(false);
         return;
       }
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      let textBuffer = "";
+      let buffer = "";
       let done = false;
 
       while (!done) {
         const { done: streamDone, value } = await reader.read();
         if (streamDone) break;
-        textBuffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true });
 
-        let newlineIndex: number;
-        while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
-          let line = textBuffer.slice(0, newlineIndex);
-          textBuffer = textBuffer.slice(newlineIndex + 1);
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
           if (line.endsWith("\r")) line = line.slice(0, -1);
-          if (line.startsWith(":") || line.trim() === "") continue;
           if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (jsonStr === "[DONE]") { done = true; break; }
+          const json = line.slice(6).trim();
+          if (json === "[DONE]") { done = true; break; }
           try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-            if (content) addBotChunk(content);
+            const parsed = JSON.parse(json);
+            const chunk = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (chunk) appendChunk(chunk);
           } catch {
-            textBuffer = line + "\n" + textBuffer;
+            buffer = line + "\n" + buffer;
             break;
           }
         }
       }
 
       const lower = botReply.toLowerCase();
-
-      // Detect face verification trigger
-      const triggersFace = FACE_TRIGGER_PHRASES.some((p) => lower.includes(p));
-      if (triggersFace && !faceVerifyTriggered.current) {
-        faceVerifyTriggered.current = true;
-        setTimeout(() => setShowFaceVerify(true), 1200);
-      }
+      const ob = onboardingRef.current;
 
       // Detect income request
-      const triggersIncome = INCOME_TRIGGER_PHRASES.some((p) => lower.includes(p));
-      if (triggersIncome && onboardingRef.current.step !== "done") {
+      if (INCOME_TRIGGER_PHRASES.some((p) => lower.includes(p)) && ob.step === "chat") {
         setOnboarding((prev) => ({ ...prev, step: "awaitingIncome" }));
       }
 
-      setProgress((p) => Math.min(p + 12, 95));
+      // Detect face verify trigger
+      if (FACE_TRIGGER_PHRASES.some((p) => lower.includes(p)) && ob.step !== "done") {
+        setOnboarding((prev) => ({ ...prev, step: "awaitingFace" }));
+        setTimeout(() => setShowFaceVerify(true), 1000);
+      }
+
+      setProgress((p) => Math.min(p + 10, 90));
     } catch (e) {
       console.error(e);
-      setMessages((prev) => [
-        ...prev,
-        { role: "bot", content: "Connection error. Please try again." },
-      ]);
+      appendChunk("Connection error. Please try again.");
     }
 
     setIsLoading(false);
   }
 
-  // ── Handle income input ───────────────────────────────────────────────────────
+  // ── Handle income ───────────────────────────────────────────────────────────
+
   async function handleIncomeInput(text: string, currentMessages: Message[]) {
     const income = parseFloat(text.replace(/[^0-9.]/g, ""));
-    if (!income || income < 1000) {
-      setMessages((prev) => [...prev, { role: "bot", content: "Please enter a valid monthly income amount in INR (e.g. 45000)." }]);
+    if (!income || income < 500) {
+      setMessages((prev) => [...prev, { role: "bot", content: "Please enter a valid monthly income in INR (e.g. 45000)." }]);
       return;
     }
 
-    const isStudent = onboardingRef.current.employmentType === "student";
     setOnboarding((prev) => ({ ...prev, monthlyIncome: income, step: "chat" }));
+    const isStudent = onboardingRef.current.employmentType === "student";
 
     if (isStudent) {
-      const studentRisk: RiskResult = {
-        probability: 0.65,
-        level: "High",
-        dti: 55,
-        explanation: "Limited credit history detected. Recommending secured student products.",
-      };
-      const studentMsg: Message = {
-        role: "bot",
-        content: `🎓 Student Profile Detected\n\n🔵 Limited credit history detected. Recommending secured student products.\n\n✅ Recommended: Student Savings Account + Secured Student Card\n❌ High-value loans: Not applicable`,
-      };
-      const newMsgs = [...currentMessages, studentMsg];
-      setMessages(newMsgs);
+      const studentRisk: RiskResult = { probability: 0.65, level: "High", dti: 55, explanation: "Limited credit history. Secured student products recommended." };
       setOnboarding((prev) => ({ ...prev, riskResult: studentRisk }));
-      setProgress((p) => Math.min(p + 15, 95));
-      setTimeout(() => finalizeAccount(newMsgs, studentRisk), 1200);
+
+      const msg: Message = {
+        role: "bot",
+        content:
+          `🎓 Student Profile Detected\n\n` +
+          `🔵 Limited credit history detected. Recommending secured student products.\n\n` +
+          `✅ Student Savings Account + Secured Student Card\n` +
+          `❌ High-value loans: Not applicable`,
+      };
+      const newMsgs = [...currentMessages, msg];
+      setMessages(newMsgs);
+      setProgress((p) => Math.min(p + 10, 90));
+
+      setTimeout(() => {
+        streamBot(
+          "Student profile and risk noted. Now tell the user face verification is next and the camera will open now.",
+          newMsgs
+        );
+      }, 1000);
       return;
     }
 
-    // Run risk scoring for non-students
-    const riskResult = await runRiskScoring(income, onboardingRef.current.employmentType);
+    // Non-student: risk scoring
+    const loadingMsg: Message = { role: "bot", content: "⏳ Running risk assessment…" };
+    setMessages([...currentMessages, loadingMsg]);
+
+    const riskResult = await runRiskScoring(income);
+    setMessages((prev) => prev.filter((m) => m.content !== "⏳ Running risk assessment…"));
+
     if (riskResult) {
       setOnboarding((prev) => ({ ...prev, riskResult }));
-      const riskEmoji = riskResult.level === "Low" ? "🟢" : riskResult.level === "Medium" ? "🟡" : "🔴";
+      const emoji = riskResult.level === "Low" ? "🟢" : riskResult.level === "Medium" ? "🟡" : "🔴";
       const riskMsg: Message = {
         role: "bot",
-        content: `${riskEmoji} Risk Assessment — ${riskResult.level} Risk\n\n${riskResult.explanation}\n\nDefault probability: ${(riskResult.probability * 100).toFixed(0)}% | Estimated DTI: ${riskResult.dti.toFixed(0)}%`,
+        content:
+          `${emoji} Risk Assessment — ${riskResult.level} Risk\n\n` +
+          `${riskResult.explanation}\n\n` +
+          `Default probability: ${(riskResult.probability * 100).toFixed(0)}% | Estimated DTI: ${riskResult.dti.toFixed(0)}%`,
       };
       const newMsgs = [...currentMessages, riskMsg];
       setMessages(newMsgs);
-      setProgress((p) => Math.min(p + 15, 95));
-      setTimeout(() => finalizeAccount(newMsgs, riskResult), 1200);
+      setProgress((p) => Math.min(p + 10, 90));
+
+      setTimeout(() => {
+        streamBot(
+          `Risk scoring done — ${riskResult.level} risk. Now tell the user face verification is next and the camera will open now.`,
+          newMsgs
+        );
+      }, 1000);
     } else {
-      setTimeout(() => finalizeAccount(currentMessages), 1200);
+      setTimeout(() => {
+        streamBot(
+          "Income noted. Tell the user face verification is next and the camera will open now.",
+          currentMessages
+        );
+      }, 800);
     }
   }
 
-  // ── Send message ──────────────────────────────────────────────────────────────
+  // ── Face verification result ────────────────────────────────────────────────
+
+  function handleFaceVerified(result: { success: boolean; message: string; capturedImage: string }) {
+    setShowFaceVerify(false);
+    setOnboarding((prev) => ({ ...prev, faceVerified: result.success }));
+
+    const botMsg: Message = {
+      role: "bot",
+      content: result.success
+        ? "✅ Face verification successful! Creating your account now… 🏦"
+        : `❌ ${result.message} Please try the face scan again.`,
+    };
+    const newMessages = [...messages, botMsg];
+    setMessages(newMessages);
+
+    if (result.success) {
+      setProgress((p) => Math.min(p + 10, 95));
+      setTimeout(() => finalizeAccount(newMessages), 1200);
+    } else {
+      setOnboarding((prev) => ({ ...prev, step: "awaitingFace" }));
+    }
+  }
+
+  // ── Send message ────────────────────────────────────────────────────────────
+
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || isLoading || onboarding.step === "done") return;
+    if (!text || isLoading || onboarding.step === "done" || onboarding.step === "awaitingFace") return;
 
     const userMsg: Message = { role: "user", content: text };
     const newHistory = [...messages, userMsg];
@@ -353,7 +400,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       return;
     }
 
-    streamMessage(text, messages);
+    streamBot(text, messages);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -363,16 +410,13 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     }
   };
 
+  // ── File upload ─────────────────────────────────────────────────────────────
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const fileMsg: Message = {
-      role: "user",
-      content: `📎 ${file.name}`,
-      isFile: true,
-      fileName: file.name,
-    };
+    const fileMsg: Message = { role: "user", content: `📎 ${file.name}`, isFile: true };
     const newHistory = [...messages, fileMsg];
     setMessages(newHistory);
 
@@ -381,12 +425,11 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       const result = ev.target?.result as string;
       const base64 = result.split(",")[1];
       const mimeType = file.type;
-
       setDocumentBase64(base64);
       setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
-
-      streamMessage(
-        `I have uploaded a document: ${file.name}. Please verify it and extract any relevant information.`,
+      setProgress((p) => Math.min(p + 12, 90));
+      streamBot(
+        `The user uploaded a document: ${file.name}. Extract the name, ID number, and document type. Cross-check with any previously uploaded document.`,
         messages,
         { base64, mimeType }
       );
@@ -395,43 +438,32 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleFaceVerified = (result: { success: boolean; message: string; capturedImage: string }) => {
-    setShowFaceVerify(false);
-    setOnboarding((prev) => ({ ...prev, faceVerified: result.success }));
+  // ── Derived UI ──────────────────────────────────────────────────────────────
 
-    const botMsg: Message = {
-      role: "bot",
-      content: result.success
-        ? "✅ Face verification successful! Your identity has been confirmed. Running risk scoring now… 📊"
-        : result.message,
-    };
-    const newMessages = [...messages, botMsg];
-    setMessages(newMessages);
+  const riskColor =
+    onboarding.riskResult?.level === "Low" ? "#22c55e"
+    : onboarding.riskResult?.level === "Medium" ? "#eab308"
+    : onboarding.riskResult?.level === "High" ? "#ef4444"
+    : null;
 
-    if (result.success) {
-      setProgress((p) => Math.min(p + 15, 95));
-      setTimeout(() => {
-        streamMessage(
-          "Face verification passed. If income hasn't been collected yet, ask for their monthly income in INR. Otherwise finalize the account.",
-          newMessages
-        );
-      }, 1500);
-    }
-  };
+  const inputPlaceholder =
+    onboarding.step === "awaitingIncome" ? "Enter monthly income in ₹ (e.g. 45000)…"
+    : onboarding.step === "awaitingFace" ? "Complete face verification — click the camera icon…"
+    : onboarding.step === "done" ? "Account created! 🎉"
+    : "Type your message…";
+
+  const isInputDisabled = onboarding.step === "done" || onboarding.step === "awaitingFace";
 
   const ribbonSvg = (
-    <svg viewBox="0 0 700 400" fill="none" xmlns="http://www.w3.org/2000/svg" className="animate-ribbon">
+    <svg viewBox="0 0 700 400" fill="none" xmlns="http://www.w3.org/2000/svg">
       <g opacity="0.9">
         {[350, 370, 390, 410, 430, 450, 470, 490, 510, 530, 550, 570].map((y, i) => {
-          const colors = ["#cc0000", "#cc0000", "#dd0000", "#dd0000", "#ee1111", "#ee1111", "#ff2222", "#ff2222", "#ff3333", "#ff3333", "#ff4444", "#ff4444"];
-          const widths = [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 2, 2, 2, 2.5, 2.5, 2.5];
+          const colors = ["#cc0000","#cc0000","#dd0000","#dd0000","#ee1111","#ee1111","#ff2222","#ff2222","#ff3333","#ff3333","#ff4444","#ff4444"];
+          const widths = [1.5,1.5,1.5,1.5,1.5,1.5,2,2,2,2.5,2.5,2.5];
           return (
-            <path
-              key={i}
-              d={`M-50 ${y} C100 ${y - 50} 200 ${y - 250} 400 ${y - 270} C550 ${y - 285} 650 ${y - 200} 750 ${y - 300}`}
-              stroke={colors[i]}
-              strokeWidth={widths[i]}
-              fill="none"
+            <path key={i}
+              d={`M-50 ${y} C100 ${y-50} 200 ${y-250} 400 ${y-270} C550 ${y-285} 650 ${y-200} 750 ${y-300}`}
+              stroke={colors[i]} strokeWidth={widths[i]} fill="none"
             />
           );
         })}
@@ -439,10 +471,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     </svg>
   );
 
-  const riskColor = onboarding.riskResult?.level === "Low" ? "#22c55e"
-    : onboarding.riskResult?.level === "Medium" ? "#eab308"
-    : onboarding.riskResult?.level === "High" ? "#ef4444"
-    : null;
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <div className="fixed inset-0 z-[500] bg-black flex flex-col overflow-hidden">
@@ -451,114 +480,109 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       <div className="absolute top-0 left-0 w-[55%] opacity-85 z-[1] pointer-events-none">{ribbonSvg}</div>
       <div className="absolute bottom-0 right-0 w-[55%] opacity-85 z-[1] pointer-events-none rotate-180">{ribbonSvg}</div>
 
-      <div
-        className="absolute inset-0 z-[1] pointer-events-none"
+      <div className="absolute inset-0 z-[1] pointer-events-none"
         style={{ background: "radial-gradient(circle at center, transparent 40%, black 100%)" }}
       />
 
-      <button
-        onClick={onClose}
-        className="absolute top-5 left-6 z-10 bg-transparent border-none text-white text-2xl cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
-      >
+      {/* Back */}
+      <button onClick={onClose}
+        className="absolute top-5 left-6 z-10 bg-transparent border-none text-white text-2xl cursor-pointer opacity-70 hover:opacity-100 transition-opacity">
         ←
       </button>
 
+      {/* Logo */}
       <div className="absolute top-[18px] left-1/2 -translate-x-1/2 text-xl font-black z-10 tracking-wide">
         Onboard<span className="text-[#ff2a2a]" style={{ textShadow: "0 0 10px red" }}>X</span>
       </div>
 
+      {/* Risk badge */}
       {onboarding.riskResult && riskColor && (
-        <div
-          className="absolute top-[16px] right-6 z-10 text-xs font-bold px-3 py-1 rounded-full border"
-          style={{ color: riskColor, borderColor: riskColor, background: `${riskColor}18` }}
-        >
+        <div className="absolute top-[16px] right-6 z-10 text-xs font-bold px-3 py-1 rounded-full border"
+          style={{ color: riskColor, borderColor: riskColor, background: `${riskColor}18` }}>
           {onboarding.employmentType === "student" ? "🎓 Student" : `${onboarding.riskResult.level} Risk`}
         </div>
       )}
 
+      {/* Face verify overlay */}
       {showFaceVerify && (
         <FaceVerification
           documentBase64={documentBase64}
           onVerified={handleFaceVerified}
-          onClose={() => setShowFaceVerify(false)}
+          onClose={() => {
+            setShowFaceVerify(false);
+            if (onboardingRef.current.step === "awaitingFace") {
+              setOnboarding((prev) => ({ ...prev, step: "chat" }));
+            }
+          }}
         />
       )}
 
+      {/* Main */}
       <div className="relative z-[5] flex-1 flex flex-col items-center justify-center px-[6%] pt-16 pb-4">
+
+        {/* Progress */}
         <div className="w-full max-w-[780px] mb-4 flex flex-col gap-1">
           <div className="w-full h-[3px] bg-white/10 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{
-                width: `${progress}%`,
-                background: progress === 100 ? "linear-gradient(to right, #16a34a, #22c55e)" : "linear-gradient(to right, #8b0000, #ff2a2a)",
-                boxShadow: progress === 100 ? "0 0 8px #22c55e" : "0 0 8px #ff2a2a",
-              }}
-            />
+            <div className="h-full rounded-full transition-all duration-700" style={{
+              width: `${progress}%`,
+              background: progress === 100 ? "linear-gradient(to right, #16a34a, #22c55e)" : "linear-gradient(to right, #8b0000, #ff2a2a)",
+              boxShadow: progress === 100 ? "0 0 8px #22c55e" : "0 0 8px #ff2a2a",
+            }} />
           </div>
           <div className="text-[10px] tracking-[2px] text-[#666] text-right">
             {progress === 100 ? "✅ Account Created" : `${progress}% complete`}
           </div>
         </div>
 
-        <div
-          className="w-full max-w-[780px] flex flex-col gap-4 mb-6 overflow-y-auto pr-1"
-          style={{ maxHeight: "55vh", scrollbarWidth: "thin", scrollbarColor: "rgba(255,0,0,0.3) transparent" }}
-        >
+        {/* Messages */}
+        <div className="w-full max-w-[780px] flex flex-col gap-4 mb-4 overflow-y-auto pr-1"
+          style={{ maxHeight: "55vh", scrollbarWidth: "thin", scrollbarColor: "rgba(255,0,0,0.3) transparent" }}>
+
           {messages.length === 0 && (
-            <p className="text-center text-2xl py-5" style={{ fontFamily: "Georgia, serif", textShadow: "0 0 20px rgba(255,255,255,0.4)" }}>
+            <p className="text-center text-2xl py-5"
+              style={{ fontFamily: "Georgia, serif", textShadow: "0 0 20px rgba(255,255,255,0.4)" }}>
               Do you want to create a bank account?
             </p>
           )}
 
           {messages.map((msg, i) => (
-            <div
-              key={i}
+            <div key={i}
               className="px-5 py-3 rounded-[22px] text-base leading-relaxed max-w-[80%]"
               style={{
                 animation: "msgPop 0.3s ease",
                 whiteSpace: "pre-wrap",
-                ...(msg.isAccountDetails
-                  ? {
-                      background: "linear-gradient(135deg, rgba(0,80,0,0.85), rgba(0,40,0,0.9))",
-                      color: "#86efac",
-                      border: "1px solid rgba(34,197,94,0.4)",
-                      boxShadow: "0 0 30px rgba(34,197,94,0.2)",
-                      alignSelf: "flex-start",
-                      fontFamily: "monospace",
-                    }
-                  : msg.role === "user"
-                  ? {
-                      background: "rgba(230,230,230,0.92)",
-                      color: "#111",
-                      borderBottomRightRadius: "5px",
-                      alignSelf: "flex-end",
-                      marginLeft: "auto",
-                    }
-                  : {
-                      background: "rgba(160,0,0,0.8)",
-                      color: "white",
-                      borderBottomLeftRadius: "5px",
-                      alignSelf: "flex-start",
-                      boxShadow: "0 0 20px rgba(255,0,0,0.3)",
-                    }),
-              }}
-            >
+                ...(msg.isAccountDetails ? {
+                  background: "linear-gradient(135deg, rgba(0,80,0,0.85), rgba(0,40,0,0.9))",
+                  color: "#86efac",
+                  border: "1px solid rgba(34,197,94,0.4)",
+                  boxShadow: "0 0 30px rgba(34,197,94,0.2)",
+                  alignSelf: "flex-start",
+                  fontFamily: "monospace",
+                  maxWidth: "90%",
+                } : msg.role === "user" ? {
+                  background: "rgba(230,230,230,0.92)",
+                  color: "#111",
+                  borderBottomRightRadius: "5px",
+                  alignSelf: "flex-end",
+                  marginLeft: "auto",
+                } : {
+                  background: "rgba(160,0,0,0.8)",
+                  color: "white",
+                  borderBottomLeftRadius: "5px",
+                  alignSelf: "flex-start",
+                  boxShadow: "0 0 20px rgba(255,0,0,0.3)",
+                }),
+              }}>
               {msg.content}
             </div>
           ))}
 
           {isLoading && (
-            <div
-              className="flex items-center gap-1 px-5 py-3 rounded-[22px] w-auto"
-              style={{ background: "rgba(160,0,0,0.8)", alignSelf: "flex-start", boxShadow: "0 0 20px rgba(255,0,0,0.3)" }}
-            >
+            <div className="flex items-center gap-1 px-5 py-3 rounded-[22px] w-auto"
+              style={{ background: "rgba(160,0,0,0.8)", alignSelf: "flex-start", boxShadow: "0 0 20px rgba(255,0,0,0.3)" }}>
               {[0, 0.15, 0.3].map((delay, i) => (
-                <span
-                  key={i}
-                  className="w-2 h-2 rounded-full inline-block"
-                  style={{ background: "#ff4444", animation: `typingBounce 1s infinite`, animationDelay: `${delay}s` }}
-                />
+                <span key={i} className="w-2 h-2 rounded-full inline-block"
+                  style={{ background: "#ff4444", animation: "typingBounce 1s infinite", animationDelay: `${delay}s` }} />
               ))}
             </div>
           )}
@@ -566,62 +590,70 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Step hints */}
         {onboarding.step === "awaitingIncome" && (
           <div className="w-full max-w-[780px] mb-2 text-xs text-yellow-400 text-center tracking-wider">
             💰 Enter your monthly income in INR (e.g. 45000)
           </div>
         )}
+        {onboarding.step === "awaitingFace" && (
+          <div className="w-full max-w-[780px] mb-2 text-xs text-blue-400 text-center tracking-wider animate-pulse">
+            📸 Click the camera icon to complete face verification
+          </div>
+        )}
 
-        <div
-          className="w-full max-w-[780px] flex items-center rounded-[50px] gap-3"
+        {/* Input bar */}
+        <div className="w-full max-w-[780px] flex items-center rounded-[50px] gap-3"
           style={{
             background: "rgba(30,30,30,0.9)",
             padding: "12px 16px 12px 22px",
             boxShadow: "0 0 30px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08)",
             backdropFilter: "blur(10px)",
-          }}
-        >
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center flex-shrink-0 w-8 h-8 rounded-full text-[#aaa] text-xl cursor-pointer transition-colors hover:text-white hover:border-white"
+          }}>
+
+          {/* Upload */}
+          <button onClick={() => fileInputRef.current?.click()}
+            disabled={onboarding.step === "done"}
+            className="flex items-center justify-center flex-shrink-0 w-8 h-8 rounded-full text-[#aaa] text-xl cursor-pointer transition-colors hover:text-white disabled:opacity-30"
             style={{ background: "none", border: "1.5px solid #555" }}
-            title="Upload document"
-          >
+            title="Upload document">
             +
           </button>
           <input ref={fileInputRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleFileUpload} />
 
+          {/* Text */}
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={
-              onboarding.step === "awaitingIncome" ? "Enter monthly income in ₹..."
-              : onboarding.step === "done" ? "Account created! 🎉"
-              : "Type your message..."
-            }
-            disabled={onboarding.step === "done"}
-            className="flex-1 bg-transparent border-none outline-none text-white text-base tracking-wide placeholder:text-[#666] disabled:opacity-40"
+            placeholder={inputPlaceholder}
+            disabled={isInputDisabled}
+            className="flex-1 bg-transparent border-none outline-none text-white text-base tracking-wide placeholder:text-[#555] disabled:opacity-40 disabled:cursor-not-allowed"
           />
 
+          {/* Camera */}
           <button
             onClick={() => setShowFaceVerify(true)}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-[#aaa] text-lg flex-shrink-0 hover:text-white transition-colors bg-transparent border-none cursor-pointer"
+            disabled={onboarding.step === "done"}
+            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 hover:text-white transition-colors bg-transparent border-none cursor-pointer disabled:opacity-30"
             title="Face Verification"
-          >
+            style={{
+              color: onboarding.step === "awaitingFace" ? "#60a5fa" : "#aaa",
+              filter: onboarding.step === "awaitingFace" ? "drop-shadow(0 0 6px #60a5fa)" : "none",
+            }}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
               <circle cx="12" cy="13" r="4" />
             </svg>
           </button>
 
+          {/* Send */}
           <button
             onClick={sendMessage}
-            disabled={isLoading || !input.trim() || onboarding.step === "done"}
-            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 cursor-pointer hover:scale-110 transition-transform border-none disabled:opacity-50"
+            disabled={isLoading || !input.trim() || isInputDisabled}
+            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 cursor-pointer hover:scale-110 transition-transform border-none disabled:opacity-30"
             style={{ background: "white", color: "black" }}
-            title="Send"
-          >
+            title="Send">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="5" y1="12" x2="19" y2="12" />
               <polyline points="13 6 19 12 13 18" />
