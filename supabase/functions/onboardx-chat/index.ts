@@ -72,28 +72,64 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
   return { probability, level, dti, explanation };
 }
 
-// ── AbstractAPI Email Validation ───────────────────────────────────────────────
+// ── AbstractAPI Email Validation ──────────────────────────────────────────────
 async function validateEmail(email: string, apiKey: string): Promise<{ valid: boolean; reason: string }> {
   try {
-    // Try AbstractAPI v2 first (new format)
     const url = `https://emailvalidation.abstractapi.com/v1/?api_key=${apiKey}&email=${encodeURIComponent(email)}`;
     const res = await fetch(url);
-    if (!res.ok) return { valid: false, reason: "Validation service unavailable" };
-    const data = await res.json();
 
-    // AbstractAPI v2 response format
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error("Email validation service error:", res.status, errorText);
+
+      // FIX: Do NOT mark email invalid just because API failed
+      return {
+        valid: true,
+        reason: "Validation service temporarily unavailable. Proceeding.",
+      };
+    }
+
+    const data = await res.json();
+    console.log("Email validation response:", data);
+
+    // ── Handle AbstractAPI v2 format ──
     if (data.email_deliverability) {
       const status = data.email_deliverability.status?.toLowerCase();
       const isFormatValid = data.email_deliverability.is_format_valid === true;
-      const valid = (status === "deliverable" || status === "risky") && isFormatValid;
-      return { valid, reason: valid ? "Email is valid" : `Email issue: ${status}` };
+
+      if (!isFormatValid) {
+        return { valid: false, reason: "Invalid email format" };
+      }
+
+      if (status === "deliverable" || status === "risky") {
+        return { valid: true, reason: "Email is valid" };
+      }
+
+      return { valid: false, reason: `Email issue: ${status || "unknown"}` };
     }
 
-    // AbstractAPI v1 legacy format
-    const valid = data.deliverability === "DELIVERABLE" && data.is_valid_format?.value === true;
-    return { valid, reason: valid ? "Email is valid" : `Email issue: ${data.deliverability}` };
-  } catch {
-    return { valid: false, reason: "Could not validate email" };
+    // ── Handle AbstractAPI v1 legacy format ──
+    const status = data.deliverability?.toLowerCase();
+    const isFormatValid = data.is_valid_format?.value === true;
+
+    if (!isFormatValid) {
+      return { valid: false, reason: "Invalid email format" };
+    }
+
+    if (status === "deliverable" || status === "risky") {
+      return { valid: true, reason: "Email is valid" };
+    }
+
+    return { valid: false, reason: `Email issue: ${status || "unknown"}` };
+
+  } catch (error) {
+    console.error("Email validation failed:", error);
+
+    // FIX: API crash should NOT block onboarding
+    return {
+      valid: true,
+      reason: "Could not automatically verify email. Please ensure it is correct.",
+    };
   }
 }
 
