@@ -73,20 +73,32 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
 }
 
 // ── AbstractAPI Email Validation ──────────────────────────────────────────────
+// ── Replace your existing validateEmail function with this ──────────────────
+
+function isValidEmailFormat(email: string): boolean {
+  // Standard email regex — covers 99.9% of real addresses
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
 async function validateEmail(email: string, apiKey: string): Promise<{ valid: boolean; reason: string }> {
+  // Always check format first — reject clearly malformed emails immediately
+  if (!isValidEmailFormat(email)) {
+    return { valid: false, reason: "Invalid email format. Please use format: name@domain.com" };
+  }
+
+  // If no API key configured, just trust the format check
+  if (!apiKey) {
+    return { valid: true, reason: "Email format is valid" };
+  }
+
   try {
     const url = `https://emailvalidation.abstractapi.com/v1/?api_key=${apiKey}&email=${encodeURIComponent(email)}`;
     const res = await fetch(url);
 
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error("Email validation service error:", res.status, errorText);
-
-      // FIX: Do NOT mark email invalid just because API failed
-      return {
-        valid: true,
-        reason: "Validation service temporarily unavailable. Proceeding.",
-      };
+      console.error("Email validation service error:", res.status);
+      // API failed → fall back to format-only validation (already passed above)
+      return { valid: true, reason: "Validation service unavailable. Email format accepted." };
     }
 
     const data = await res.json();
@@ -94,37 +106,39 @@ async function validateEmail(email: string, apiKey: string): Promise<{ valid: bo
 
     // ── Handle AbstractAPI v2 format ──
     if (data.email_deliverability) {
-      const status = data.email_deliverability.status?.toLowerCase();
       const isFormatValid = data.email_deliverability.is_format_valid === true;
-
       if (!isFormatValid) {
         return { valid: false, reason: "Invalid email format" };
       }
-
-      if (status === "deliverable" || status === "risky") {
-        return { valid: true, reason: "Email is valid" };
-      }
-
-      return { valid: false, reason: `Email issue: ${status || "unknown"}` };
+      // If format is valid but deliverability is uncertain/undeliverable,
+      // trust the format — deliverability checks are unreliable for many providers
+      return { valid: true, reason: "Email accepted" };
     }
 
     // ── Handle AbstractAPI v1 legacy format ──
-    const status = data.deliverability?.toLowerCase();
     const isFormatValid = data.is_valid_format?.value === true;
-
     if (!isFormatValid) {
       return { valid: false, reason: "Invalid email format" };
     }
 
-    if (status === "deliverable" || status === "risky") {
-      return { valid: true, reason: "Email is valid" };
+    const status = data.deliverability?.toLowerCase();
+
+    // Only hard-reject if API explicitly flags format as bad
+    // Do NOT reject based on "undeliverable" — too many false positives
+    if (status === "deliverable" || status === "risky" || status === "undeliverable") {
+      // Accept all — deliverability varies by API quota/tier; format is our real gate
+      return { valid: true, reason: "Email accepted" };
     }
 
-    return { valid: false, reason: `Email issue: ${status || "unknown"}` };
+    // Unknown status → accept if format passed
+    return { valid: true, reason: "Email format accepted" };
 
   } catch (error) {
     console.error("Email validation failed:", error);
-
+    // Network error → format already validated above, so accept
+    return { valid: true, reason: "Could not verify email. Please ensure it is correct." };
+  }
+}
     // FIX: API crash should NOT block onboarding
     return {
       valid: true,
