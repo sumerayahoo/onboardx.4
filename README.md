@@ -118,3 +118,5 @@ This project aims to redefine digital onboarding by making it intelligent, secur
 We believe onboarding should feel effortless — not exhausting.
 
 This project is our step toward building smarter financial ecosystems powered by AI.
+
+Contribution by Aditi Hedaoo
