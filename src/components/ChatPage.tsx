@@ -425,19 +425,22 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     setShowFaceVerify(false);
     setOnboarding((prev) => ({ ...prev, faceVerified: result.success }));
 
-    const botMsg: Message = {
-      role: "bot",
-      content: result.success
-        ? "✅ Face verification successful! Creating your account now… 🏦"
-        : `❌ ${result.message} Please try the face scan again.`,
-    };
-    const newMessages = [...messages, botMsg];
-    setMessages(newMessages);
-
     if (result.success) {
+      const botMsg: Message = {
+        role: "bot",
+        content: "✅ Face verification successful! Creating your account now… 🏦",
+      };
+      const newMessages = [...messages, botMsg];
+      setMessages(newMessages);
       setProgress((p) => Math.min(p + 10, 95));
+      // Go directly to finalizeAccount — no AI stream needed
       setTimeout(() => finalizeAccount(newMessages), 1200);
     } else {
+      const botMsg: Message = {
+        role: "bot",
+        content: `❌ ${result.message} Please try the face scan again.`,
+      };
+      setMessages([...messages, botMsg]);
       setOnboarding((prev) => ({ ...prev, step: "awaitingFace" }));
     }
   }
