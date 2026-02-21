@@ -85,6 +85,74 @@ serve(async (req) => {
       });
     }
 
+    // ── Send account details via email ────────────────────────────────────────
+    const { sendEmail } = body;
+    if (sendEmail) {
+      const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
+      if (!RESEND_API_KEY) {
+        return new Response(JSON.stringify({ error: "Email service not configured" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { to, accountDetails } = sendEmail;
+      const htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #fff; border-radius: 12px; overflow: hidden;">
+          <div style="background: linear-gradient(135deg, #8b0000, #cc0000); padding: 30px; text-align: center;">
+            <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">Onboard<span style="color: #ff6666;">X</span></h1>
+            <p style="margin: 8px 0 0; font-size: 14px; opacity: 0.9;">Your Digital Banking Partner</p>
+          </div>
+          <div style="padding: 30px;">
+            <h2 style="color: #22c55e; margin-top: 0;">🎉 Account Created Successfully!</h2>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr><td style="padding: 10px; color: #999; border-bottom: 1px solid #222;">Account Number</td><td style="padding: 10px; color: #fff; font-weight: bold; border-bottom: 1px solid #222;">${accountDetails.accountNumber}</td></tr>
+              <tr><td style="padding: 10px; color: #999; border-bottom: 1px solid #222;">IFSC Code</td><td style="padding: 10px; color: #fff; font-weight: bold; border-bottom: 1px solid #222;">${accountDetails.ifsc}</td></tr>
+              <tr><td style="padding: 10px; color: #999; border-bottom: 1px solid #222;">Branch</td><td style="padding: 10px; color: #fff; border-bottom: 1px solid #222;">OnboardX Digital Branch, Mumbai</td></tr>
+              <tr><td style="padding: 10px; color: #999; border-bottom: 1px solid #222;">Account Type</td><td style="padding: 10px; color: #fff; border-bottom: 1px solid #222;">${accountDetails.accountType}</td></tr>
+              ${accountDetails.monthlyIncome ? `<tr><td style="padding: 10px; color: #999; border-bottom: 1px solid #222;">Monthly Income</td><td style="padding: 10px; color: #fff; border-bottom: 1px solid #222;">₹${accountDetails.monthlyIncome}</td></tr>` : ""}
+              ${accountDetails.riskLevel ? `<tr><td style="padding: 10px; color: #999;">Risk Level</td><td style="padding: 10px; color: #fff;">${accountDetails.riskLevel}</td></tr>` : ""}
+            </table>
+            <p style="color: #666; font-size: 12px; margin-top: 30px; text-align: center;">This is an automated email from OnboardX. Please save these details for your records.</p>
+          </div>
+        </div>`;
+
+      try {
+        const emailResp = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: "OnboardX <onboarding@resend.dev>",
+            to: [to],
+            subject: "🎉 Your OnboardX Bank Account Details",
+            html: htmlBody,
+          }),
+        });
+
+        if (!emailResp.ok) {
+          const errText = await emailResp.text();
+          console.error("Resend error:", emailResp.status, errText);
+          return new Response(JSON.stringify({ success: false, error: "Failed to send email" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Email send error:", err);
+        return new Response(JSON.stringify({ success: false, error: "Email service error" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // ── Face verification mode ─────────────────────────────────────────────────
     if (faceVerifyMode) {
       const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
