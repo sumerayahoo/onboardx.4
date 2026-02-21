@@ -22,7 +22,7 @@ interface RiskResult {
   explanation: string;
 }
 
-type OnboardingStep = "chat" | "awaitingIncome" | "awaitingFace" | "done";
+type OnboardingStep = "chat" | "awaitingIncome" | "awaitingFace" | "awaitingEmail" | "done";
 
 interface OnboardingState {
   employmentType: string;
@@ -31,6 +31,9 @@ interface OnboardingState {
   faceVerified: boolean;
   riskResult: RiskResult | null;
   step: OnboardingStep;
+  accountNumber: string;
+  ifsc: string;
+  accountType: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -100,6 +103,9 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     faceVerified: false,
     riskResult: null,
     step: "chat",
+    accountNumber: "",
+    ifsc: "",
+    accountType: "",
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -178,8 +184,65 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         `Please save these details. Welcome to OnboardX! 🚀`,
     };
 
+    const emailPrompt: Message = {
+      role: "bot",
+      content: "📧 Would you like to receive these account details on your email? Enter your email address (e.g. yourname@gmail.com) or type 'skip' to finish.",
+    };
+
+    setOnboarding((prev) => ({ ...prev, step: "awaitingEmail", accountNumber, ifsc, accountType }));
+    setMessages([...currentMessages, accountMsg, emailPrompt]);
+    setProgress(95);
+  }
+
+  // ── Handle email input ──────────────────────────────────────────────────────
+
+  async function handleEmailInput(text: string, currentMessages: Message[]) {
+    if (text.toLowerCase() === "skip") {
+      setOnboarding((prev) => ({ ...prev, step: "done" }));
+      setMessages([...currentMessages, { role: "bot", content: "✅ No problem! Your account details are shown above. Welcome to OnboardX! 🚀" }]);
+      setProgress(100);
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(text)) {
+      setMessages((prev) => [...prev, { role: "bot", content: "Please enter a valid email (e.g. yourname@gmail.com) or type 'skip'." }]);
+      return;
+    }
+
+    const ob = onboardingRef.current;
+    const sendingMsg: Message = { role: "bot", content: "📤 Sending account details to your email…" };
+    setMessages([...currentMessages, sendingMsg]);
+
+    try {
+      const resp = await callEdgeFunction({
+        sendEmail: {
+          to: text,
+          accountDetails: {
+            accountNumber: ob.accountNumber,
+            ifsc: ob.ifsc,
+            accountType: ob.accountType,
+            monthlyIncome: ob.monthlyIncome ? ob.monthlyIncome.toLocaleString("en-IN") : null,
+            riskLevel: ob.riskResult ? `${ob.riskResult.level} (${(ob.riskResult.probability * 100).toFixed(0)}%)` : null,
+          },
+        },
+      });
+
+      const data = await resp.json();
+
+      setMessages((prev) => prev.filter((m) => m.content !== "📤 Sending account details to your email…"));
+
+      if (resp.ok && data.success) {
+        setMessages((prev) => [...prev, { role: "bot", content: `✅ Account details sent to ${text}! Check your inbox. Welcome to OnboardX! 🚀` }]);
+      } else {
+        setMessages((prev) => [...prev, { role: "bot", content: `⚠️ Couldn't send email, but your account details are displayed above. Welcome to OnboardX! 🚀` }]);
+      }
+    } catch {
+      setMessages((prev) => prev.filter((m) => m.content !== "📤 Sending account details to your email…"));
+      setMessages((prev) => [...prev, { role: "bot", content: `⚠️ Email service unavailable, but your account details are shown above. Welcome to OnboardX! 🚀` }]);
+    }
+
     setOnboarding((prev) => ({ ...prev, step: "done" }));
-    setMessages([...currentMessages, accountMsg]);
     setProgress(100);
   }
 
@@ -395,6 +458,11 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       setOnboarding((prev) => ({ ...prev, employmentType: emp }));
     }
 
+    if (onboarding.step === "awaitingEmail") {
+      await handleEmailInput(text, newHistory);
+      return;
+    }
+
     if (onboarding.step === "awaitingIncome") {
       await handleIncomeInput(text, newHistory);
       return;
@@ -447,7 +515,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     : null;
 
   const inputPlaceholder =
-    onboarding.step === "awaitingIncome" ? "Enter monthly income in ₹ (e.g. 45000)…"
+    onboarding.step === "awaitingEmail" ? "Enter your email (e.g. yourname@gmail.com) or type 'skip'…"
+    : onboarding.step === "awaitingIncome" ? "Enter monthly income in ₹ (e.g. 45000)…"
     : onboarding.step === "awaitingFace" ? "Complete face verification — click the camera icon…"
     : onboarding.step === "done" ? "Account created! 🎉"
     : "Type your message…";
@@ -599,6 +668,11 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         {onboarding.step === "awaitingFace" && (
           <div className="w-full max-w-[780px] mb-2 text-xs text-blue-400 text-center tracking-wider animate-pulse">
             📸 Click the camera icon to complete face verification
+          </div>
+        )}
+        {onboarding.step === "awaitingEmail" && (
+          <div className="w-full max-w-[780px] mb-2 text-xs text-emerald-400 text-center tracking-wider">
+            📧 Enter your email to receive account details or type 'skip'
           </div>
         )}
 
