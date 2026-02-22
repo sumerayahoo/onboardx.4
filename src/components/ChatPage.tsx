@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import ChatStarCanvas from "./ChatStarCanvas";
 import FaceVerification from "./FaceVerification";
+import { scanQRFromBase64 } from "@/utils/qrScanner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -492,18 +493,116 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     setMessages(newHistory);
 
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const result = ev.target?.result as string;
       const base64 = result.split(",")[1];
       const mimeType = file.type;
       setDocumentBase64(base64);
-      setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
-      setProgress((p) => Math.min(p + 12, 90));
-      streamBot(
-        `The user uploaded a document: ${file.name}. Extract the name, ID number, and document type. Cross-check with any previously uploaded document.`,
-        messages,
-        { base64, mimeType }
-      );
+
+      // Show scanning message
+      const scanMsg: Message = { role: "bot", content: "🔍 Scanning document for authenticity…" };
+      setMessages((prev) => [...prev, scanMsg]);
+
+      // 1. Attempt QR code scanning (for Aadhaar)
+      let qrData: string | null = null;
+      try {
+        qrData = await scanQRFromBase64(base64, mimeType);
+      } catch {
+        // QR scan failed silently
+      }
+
+      // 2. Call document verification endpoint
+      try {
+        const verifyResp = await callEdgeFunction({
+          documentVerifyMode: {
+            imageBase64: base64,
+            mimeType,
+            qrData,
+            documentType: file.name.toLowerCase().includes("pan") ? "PAN" : file.name.toLowerCase().includes("aadhaar") || file.name.toLowerCase().includes("aadhar") ? "Aadhaar" : "auto-detect",
+          },
+        });
+
+        const verifyData = await verifyResp.json();
+        const v = verifyData.verification;
+
+        // Remove scanning message
+        setMessages((prev) => prev.filter((m) => m.content !== "🔍 Scanning document for authenticity…"));
+
+        if (v) {
+          const verdictEmoji = v.overallVerdict === "GENUINE" ? "✅" : v.overallVerdict === "SUSPICIOUS" ? "⚠️" : "🚫";
+          const verdictColor = v.overallVerdict === "GENUINE" ? "Verified" : v.overallVerdict === "SUSPICIOUS" ? "Suspicious" : "Rejected";
+
+          let verifyMsg = `${verdictEmoji} Document Analysis — ${verdictColor}\n\n`;
+          verifyMsg += `📄 Type: ${v.documentType || "Unknown"}\n`;
+          verifyMsg += `🎯 Confidence: ${v.confidenceScore || "N/A"}%\n`;
+          verifyMsg += `📋 Format: ${v.formatValid ? "✅ Valid" : "❌ Invalid"}\n`;
+
+          if (qrData) {
+            verifyMsg += `📱 QR Code: ${v.qrConsistent ? "✅ Data consistent" : "❌ Data mismatch"}\n`;
+          } else if (v.documentType === "Aadhaar") {
+            verifyMsg += `📱 QR Code: ⚠️ Not detected\n`;
+          }
+
+          if (v.securityFeatures) {
+            if (v.securityFeatures.detected?.length) {
+              verifyMsg += `🔒 Security: ${v.securityFeatures.detected.join(", ")}\n`;
+            }
+            if (v.securityFeatures.missing?.length) {
+              verifyMsg += `⚠️ Missing: ${v.securityFeatures.missing.join(", ")}\n`;
+            }
+          }
+
+          if (v.riskFlags?.length) {
+            verifyMsg += `\n🚩 Risk Flags: ${v.riskFlags.join("; ")}`;
+          }
+
+          verifyMsg += `\n\n${v.reason || ""}`;
+
+          const verifyBotMsg: Message = { role: "bot", content: verifyMsg };
+          const updatedMsgs = [...newHistory, verifyBotMsg];
+          setMessages(updatedMsgs);
+
+          // If genuine or suspicious, proceed with onboarding
+          if (v.overallVerdict !== "LIKELY_FAKE") {
+            setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
+            setProgress((p) => Math.min(p + 12, 90));
+
+            const verifyContext = `Document verification result: ${v.overallVerdict} (${v.confidenceScore}% confidence). ${v.reason}. Extracted name: ${v.extractedData?.name || "unknown"}, ID: ${v.extractedData?.idNumber || "unknown"}.`;
+            streamBot(
+              `The user uploaded a document: ${file.name}. ${verifyContext} Extract details and cross-check with any previously uploaded document.`,
+              updatedMsgs,
+              { base64, mimeType }
+            );
+          } else {
+            // Document likely fake - don't proceed
+            streamBot(
+              `The user uploaded a document: ${file.name}. Document verification FAILED — verdict: LIKELY_FAKE. Reason: ${v.reason}. Risk flags: ${v.riskFlags?.join(", ")}. Tell the user this document appears to be fraudulent and ask them to upload a genuine document.`,
+              updatedMsgs,
+              { base64, mimeType }
+            );
+          }
+        } else {
+          // Verification parsing failed, fall back to regular flow
+          setMessages((prev) => prev.filter((m) => m.content !== "🔍 Scanning document for authenticity…"));
+          setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
+          setProgress((p) => Math.min(p + 12, 90));
+          streamBot(
+            `The user uploaded a document: ${file.name}. Extract the name, ID number, and document type. Cross-check with any previously uploaded document.`,
+            messages,
+            { base64, mimeType }
+          );
+        }
+      } catch {
+        // Verification failed, fall back
+        setMessages((prev) => prev.filter((m) => m.content !== "🔍 Scanning document for authenticity…"));
+        setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
+        setProgress((p) => Math.min(p + 12, 90));
+        streamBot(
+          `The user uploaded a document: ${file.name}. Extract the name, ID number, and document type. Cross-check with any previously uploaded document.`,
+          messages,
+          { base64, mimeType }
+        );
+      }
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
