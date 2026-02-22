@@ -67,12 +67,21 @@ function calculateRisk(inputs: RiskInputs): RiskResult {
   return { probability, level, dti, explanation };
 }
 
+// ── PAN format validation ─────────────────────────────────────────────────────
+function validatePANFormat(pan: string): { valid: boolean; reason: string } {
+  const panRegex = /^[A-Z]{3}[ABCFGHLJPT][A-Z]\d{4}[A-Z]$/;
+  if (!panRegex.test(pan.toUpperCase())) {
+    return { valid: false, reason: `PAN "${pan}" has invalid format. Must be ABCDE1234F (5 letters, 4 digits, 1 letter). 4th letter must indicate holder type (P=Individual, C=Company, etc).` };
+  }
+  return { valid: true, reason: "PAN format is valid." };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const body = await req.json();
-    const { messages, fileData, faceVerifyMode, riskData } = body;
+    const { messages, fileData, faceVerifyMode, riskData, documentVerifyMode } = body;
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
@@ -81,6 +90,111 @@ serve(async (req) => {
     if (riskData) {
       const result = calculateRisk(riskData);
       return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Document verification mode ─────────────────────────────────────────────
+    if (documentVerifyMode) {
+      const { imageBase64, mimeType, qrData, documentType } = documentVerifyMode;
+
+      // PAN format check if PAN number extracted
+      let panCheck: { valid: boolean; reason: string } | null = null;
+      if (documentVerifyMode.panNumber) {
+        panCheck = validatePANFormat(documentVerifyMode.panNumber);
+      }
+
+      const verifyPrompt = `You are a KYC document forensic analyst. Analyze the uploaded ${documentType || "identity document"} image for authenticity.
+
+Perform ALL these checks:
+
+1. **DOCUMENT TYPE DETECTION**: Identify if this is a PAN card, Aadhaar card, or other document.
+
+2. **IMAGE TAMPERING DETECTION**:
+   - Check for signs of digital editing (inconsistent fonts, misaligned text, color anomalies, blurred edges around text/photo)
+   - Check if the photo appears digitally pasted or manipulated
+   - Check for pixelation or resolution inconsistencies between areas
+   - Check for copy-paste artifacts or cloning marks
+
+3. **FORMAT & LAYOUT VALIDATION**:
+   - For PAN: Verify correct NSDL/UTI layout, Income Tax Department logo, hologram area, correct font
+   - For Aadhaar: Verify UIDAI logo, correct layout, emblem of India, proper formatting
+   - Check print quality indicators (professional vs home-printed)
+
+4. **PHYSICAL SECURITY FEATURES** (visible in image):
+   - Micro text presence/absence
+   - Holographic elements (if visible)
+   - Ghost image (for Aadhaar)
+   - Proper embossing indicators
+   - Issue/print date formatting
+
+5. **DATA CONSISTENCY**:
+   - Does the name format match standard government document formatting?
+   - Are dates in correct format?
+   - Is the ID number format valid?
+${panCheck ? `\n6. **PAN FORMAT CHECK**: ${panCheck.reason}` : ""}
+${qrData ? `\n7. **QR CODE DATA**: The following data was extracted from the QR code on the document: "${qrData}". Verify if this data is consistent with the visible document details. If the QR data contains demographic info, cross-check name/DOB/address against the printed text.` : ""}
+
+Respond ONLY with a raw JSON object (no markdown, no code blocks):
+{
+  "documentType": "PAN" | "Aadhaar" | "Unknown",
+  "isAuthentic": boolean,
+  "confidenceScore": number (0-100),
+  "tamperedAreas": string[] (list of suspicious areas, empty if none),
+  "formatValid": boolean,
+  "securityFeatures": { "detected": string[], "missing": string[] },
+  "extractedData": { "name": string | null, "idNumber": string | null, "dob": string | null, "gender": string | null },
+  "qrConsistent": boolean | null (null if no QR data provided),
+  "riskFlags": string[] (list of red flags),
+  "overallVerdict": "GENUINE" | "SUSPICIOUS" | "LIKELY_FAKE",
+  "reason": string (max 50 words summarizing the analysis)
+}`;
+
+      const verifyMessages = [
+        { role: "system", content: verifyPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `Analyze this ${documentType || "document"} for authenticity.` },
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+          ],
+        },
+      ];
+
+      const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-pro",
+          messages: verifyMessages,
+        }),
+      });
+
+      if (!response.ok) {
+        const t = await response.text();
+        console.error("Document verify error:", response.status, t);
+        return new Response(JSON.stringify({ error: "Document verification failed" }), {
+          status: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const result = await response.json();
+      const content = result.choices?.[0]?.message?.content || "";
+
+      // Try to parse as JSON
+      let parsed;
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+      } catch {
+        parsed = null;
+      }
+
+      return new Response(JSON.stringify({ verification: parsed, raw: content }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -214,6 +328,13 @@ STEP 7 — Onboarding is complete! Generate and display the account details dire
 • Branch: OnboardX Digital Branch, Mumbai
 • Account Type: [based on employment type — e.g. Savings Account, Current Account, Student Savings Account]
 • Account Holder: [use name from documents]
+
+DOCUMENT VERIFICATION CONTEXT: When document verification results are provided, incorporate the findings:
+- If verdict is "GENUINE": Acknowledge documents are verified.
+- If verdict is "SUSPICIOUS": Warn the user about suspicious elements and ask them to re-upload a clearer/original document.
+- If verdict is "LIKELY_FAKE": Reject the document and explain why. Ask user to upload a genuine document.
+- Always mention if QR code verification passed or failed for Aadhaar.
+- Always mention if PAN format validation passed or failed.
 
 Keep replies SHORT (1-3 sentences), warm, professional, use emojis occasionally 🎉. Stay strictly on banking onboarding. Never break character. Do NOT ask for email or phone number at any point.`;
 
