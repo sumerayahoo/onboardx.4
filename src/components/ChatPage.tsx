@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ChatStarCanvas from "./ChatStarCanvas";
 import FaceVerification from "./FaceVerification";
 import { scanQRFromBase64 } from "@/utils/qrScanner";
+import { useBehavioralFraud } from "@/hooks/useBehavioralFraud";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const [progress, setProgress] = useState(5);
   const [showFaceVerify, setShowFaceVerify] = useState(false);
   const [documentBase64, setDocumentBase64] = useState<string | undefined>();
+  const [productRecommended, setProductRecommended] = useState(false);
 
   const [onboarding, setOnboarding] = useState<OnboardingState>({
     employmentType: "",
@@ -114,6 +116,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
   const chatStarted = useRef(false);
   const accountCreated = useRef(false);
   const onboardingRef = useRef(onboarding);
+
+  const { recordKeystroke, recordPaste, recordIdUpload, analyze: analyzeBehavior } = useBehavioralFraud();
 
   useEffect(() => { onboardingRef.current = onboarding; }, [onboarding]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -150,12 +154,26 @@ export default function ChatPage({ onClose }: ChatPageProps) {
 
   // ── Finalize account ────────────────────────────────────────────────────────
 
+  function getProductRecommendation(empType: string, riskLevel?: string): string {
+    const recs: Record<string, string> = {
+      student: "🎓 **Recommended for you:**\n• Student Savings Account (zero balance)\n• Secured Student Credit Card\n• Free UPI & mobile banking\n\n💡 *Tip: Build your credit history early with the secured card!*",
+      freelancer: "💼 **Recommended for you:**\n• Freelancer Current Account (no min balance)\n• Free invoice templates & payment links\n• Pre-approved business credit card\n• GST-ready transaction reports\n\n💡 *Since you're a freelancer, we added free invoice templates. Want a quick tour?*",
+      business: "🏢 **Recommended for you:**\n• Business Current Account with overdraft facility\n• Corporate credit card (₹5L limit)\n• Bulk payment & payroll management\n• Dedicated relationship manager\n\n💡 *Your business account comes with free GST filing assistance!*",
+      salaried: "💰 **Recommended for you:**\n• Premium Savings Account (3.5% interest)\n• Pre-approved personal loan up to ₹10L\n• Lifestyle credit card with 2% cashback\n• Zero-fee international transfers\n\n💡 *Based on your profile, you're pre-approved for a credit card!*",
+    };
+
+    return recs[empType] || recs.salaried;
+  }
+
   function finalizeAccount(currentMessages: Message[]) {
     if (accountCreated.current) return;
     accountCreated.current = true;
 
     const { accountNumber, ifsc } = generateAccountDetails();
     const ob = onboardingRef.current;
+
+    // Check behavioral fraud before finalizing
+    const behaviorAnalysis = analyzeBehavior();
 
     const accountTypeMap: Record<string, string> = {
       student: "Student Savings Account",
@@ -185,13 +203,32 @@ export default function ChatPage({ onClose }: ChatPageProps) {
         `Please save these details. Welcome to OnboardX! 🚀`,
     };
 
+    const msgsAfterAccount = [...currentMessages, accountMsg];
+
+    // Behavioral fraud alert if suspicious
+    if (behaviorAnalysis.riskScore > 0) {
+      const fraudMsg: Message = {
+        role: "bot",
+        content: `🛡️ Behavioral Analysis:\n${behaviorAnalysis.flags.map(f => `⚠️ ${f}`).join("\n")}\n\nFraud Risk Score: ${behaviorAnalysis.riskScore}/100`,
+      };
+      msgsAfterAccount.push(fraudMsg);
+    }
+
+    // Product recommendation
+    const productMsg: Message = {
+      role: "bot",
+      content: getProductRecommendation(ob.employmentType, ob.riskResult?.level),
+    };
+    msgsAfterAccount.push(productMsg);
+
     const emailPrompt: Message = {
       role: "bot",
       content: "📧 Would you like to receive these account details on your email? Enter your email address (e.g. yourname@gmail.com) or type 'skip' to finish.",
     };
+    msgsAfterAccount.push(emailPrompt);
 
     setOnboarding((prev) => ({ ...prev, step: "awaitingEmail", accountNumber, ifsc, accountType }));
-    setMessages([...currentMessages, accountMsg, emailPrompt]);
+    setMessages(msgsAfterAccount);
     setProgress(95);
   }
 
@@ -482,6 +519,15 @@ export default function ChatPage({ onClose }: ChatPageProps) {
     }
   };
 
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value);
+    recordKeystroke();
+  };
+
+  const handlePaste = useCallback(() => {
+    recordPaste();
+  }, [recordPaste]);
+
   // ── File upload ─────────────────────────────────────────────────────────────
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -498,6 +544,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
       const base64 = result.split(",")[1];
       const mimeType = file.type;
       setDocumentBase64(base64);
+      recordIdUpload();
 
       // Show scanning message
       const scanMsg: Message = { role: "bot", content: "🔍 Scanning document for authenticity…" };
@@ -566,6 +613,7 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           if (v.overallVerdict !== "LIKELY_FAKE") {
             setOnboarding((prev) => ({ ...prev, documentsVerified: true }));
             setProgress((p) => Math.min(p + 12, 90));
+            if (v.extractedData?.idNumber) recordIdUpload(v.extractedData.idNumber);
 
             const verifyContext = `Document verification result: ${v.overallVerdict} (${v.confidenceScore}% confidence). ${v.reason}. Extracted name: ${v.extractedData?.name || "unknown"}, ID: ${v.extractedData?.idNumber || "unknown"}.`;
             streamBot(
@@ -800,7 +848,8 @@ export default function ChatPage({ onClose }: ChatPageProps) {
           {/* Text */}
           <input
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={handleInputChange}
+            onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             placeholder={inputPlaceholder}
             disabled={isInputDisabled}
