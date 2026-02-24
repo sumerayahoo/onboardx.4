@@ -233,7 +233,7 @@ function SSSSection({ onOpenChat }: { onOpenChat: () => void }) {
   const sssWords = ["SECURE", "SMART", "SEAMLESS"];
 
   return (
-    <section className="flex items-center justify-between px-[8%] py-[100px] gap-[60px] relative overflow-hidden flex-wrap">
+    <section className="flex items-center justify-between px-[5%] md:px-[8%] py-[60px] md:py-[100px] gap-8 md:gap-[60px] relative overflow-hidden flex-wrap">
       {/* Chat side */}
       <div className="flex-1 flex flex-col gap-6 max-w-[480px]">
         {chatBubbles.map((bubble, i) => {
@@ -291,7 +291,7 @@ function SSSSection({ onOpenChat }: { onOpenChat: () => void }) {
             <div key={word}>
               <div
                 ref={ref}
-                className="text-[90px] font-black tracking-[6px] leading-none transition-all duration-500"
+                className="text-[40px] md:text-[90px] font-black tracking-[3px] md:tracking-[6px] leading-none transition-all duration-500"
                 style={{
                   textShadow: "0 0 30px white, 0 0 80px rgba(255,255,255,0.5)",
                   opacity: inView ? 1 : 0,
@@ -432,28 +432,28 @@ export default function Index() {
         </div>
 
         <h1
-          className="text-[110px] font-black tracking-[5px] mt-[340px] animate-fade-up"
-          style={{ fontSize: "clamp(50px, 10vw, 110px)" }}
+          className="text-[110px] font-black tracking-[5px] mt-[200px] md:mt-[340px] animate-fade-up"
+          style={{ fontSize: "clamp(40px, 10vw, 110px)" }}
         >
           Onboard<span className="text-[#ff2a2a] red-shadow">X</span>
         </h1>
 
         <div
-          className="mt-8 px-16 py-5 rounded-[10px] animate-fade-up"
+          className="mt-4 md:mt-8 px-6 md:px-16 py-3 md:py-5 rounded-[10px] animate-fade-up"
           style={{
             background: "rgba(255,0,0,0.15)",
             backdropFilter: "blur(15px)",
             boxShadow: "0 0 30px rgba(255,0,0,0.6)",
           }}
         >
-          <p className="text-xl tracking-[3px] italic" style={{ textShadow: "0 0 10px white" }}>
+          <p className="text-sm md:text-xl tracking-[2px] md:tracking-[3px] italic" style={{ textShadow: "0 0 10px white" }}>
             PERSONALIZED BANKING AI-AGENT
           </p>
         </div>
 
         <button
           onClick={() => setChatOpen(true)}
-          className="mt-10 px-[50px] py-4 text-lg rounded-[30px] cursor-pointer transition-transform hover:scale-110"
+          className="mt-6 md:mt-10 px-8 md:px-[50px] py-3 md:py-4 text-sm md:text-lg rounded-[30px] cursor-pointer transition-transform hover:scale-110"
           style={{
             background: "linear-gradient(90deg,#8b0000,#ff0000)",
             color: "white",
@@ -466,11 +466,11 @@ export default function Index() {
       </section>
 
       {/* SIX AGENTS */}
-      <section className="px-[10%] py-[120px] relative" style={{ zIndex: 10 }}>
-        <div className="text-center text-[48px] tracking-[6px] mb-20 white-shadow font-bold">
+      <section className="px-[5%] md:px-[10%] py-[60px] md:py-[120px] relative" style={{ zIndex: 10 }}>
+        <div className="text-center text-[28px] md:text-[48px] tracking-[3px] md:tracking-[6px] mb-10 md:mb-20 white-shadow font-bold">
           SIX SPECIAL AI AGENTS
         </div>
-        <div className="grid grid-cols-3 gap-[50px] max-[1000px]:grid-cols-2 max-[600px]:grid-cols-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-[50px]">
           {agentCards.map((card, i) => (
             <AgentCard key={card.title} title={card.title} desc={card.desc} index={i} />
           ))}
@@ -478,9 +478,9 @@ export default function Index() {
       </section>
 
       {/* PROCESS FLOW */}
-      <section className="px-[8%] py-[120px] relative" style={{ zIndex: 10 }}>
+      <section className="px-[5%] md:px-[8%] py-[60px] md:py-[120px] relative" style={{ zIndex: 10 }}>
         <div
-          className="text-center text-[52px] font-black tracking-[6px] mb-[100px]"
+          className="text-center text-[28px] md:text-[52px] font-black tracking-[3px] md:tracking-[6px] mb-[50px] md:mb-[100px]"
           style={{ textShadow: "0 0 20px #ff2a2a, 0 0 60px #ff2a2a", color: "white" }}
         >
           END TO END IN UNDER 3 MINS
